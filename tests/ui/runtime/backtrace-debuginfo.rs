@@ -12,6 +12,7 @@
 //@ ignore-wasm32 spawning processes is not supported
 //@ ignore-sgx no processes
 //@ ignore-fuchsia Backtrace not symbolized, trace different line alignment
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::env;
 

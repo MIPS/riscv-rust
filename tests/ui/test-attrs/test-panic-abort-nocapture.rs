@@ -10,6 +10,7 @@
 //@ ignore-wasm no panic or subprocess support
 //@ ignore-emscripten no panic or subprocess support
 //@ ignore-sgx no subprocess support
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![cfg(test)]
 

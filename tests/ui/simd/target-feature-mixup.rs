@@ -6,6 +6,7 @@
 //@ ignore-wasm32 no subprocess support
 //@ ignore-sgx no processes
 //@ ignore-fuchsia must translate zircon signal to SIGILL, FIXME (#58590)
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(repr_simd, target_feature, cfg_target_feature)]
 #![feature(avx512_target_feature)]

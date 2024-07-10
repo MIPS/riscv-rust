@@ -2,6 +2,7 @@
 //@ ignore-android
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(rustc_private)]
 

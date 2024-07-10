@@ -51,6 +51,7 @@ level = "warn"
 # for rust-lang/rust. But for users of `-Zbuild-std` it does.
 check-cfg = [
     'cfg(bootstrap)',
+    'cfg(target_vendor, values("mti"))',
     'cfg(no_global_oom_handling)',
     'cfg(no_rc)',
     'cfg(no_sync)',

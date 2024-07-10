@@ -4,6 +4,7 @@
 //@ ignore-vxworks no 'ps'
 //@ ignore-fuchsia no 'ps'
 //@ ignore-nto no 'ps'
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(rustc_private)]
 

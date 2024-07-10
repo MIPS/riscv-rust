@@ -3,6 +3,7 @@
 #![allow(stable_features)]
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 #![feature(process_try_wait)]
 
 use std::env;

@@ -92,6 +92,7 @@ const KNOWN_DIRECTIVE_NAMES: &[&str] = &[
     "ignore-pass",
     "ignore-remote",
     "ignore-riscv64",
+    "ignore-riscv64-mti-linux-gnu-cross-compile",
     "ignore-s390x",
     "ignore-sgx",
     "ignore-spirv",

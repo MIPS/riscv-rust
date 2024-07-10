@@ -11,6 +11,7 @@
 //@ ignore-tvos stack overflow handlers aren't enabled
 //@ ignore-watchos stack overflow handlers aren't enabled
 //@ ignore-visionos stack overflow handlers aren't enabled
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(rustc_private)]
 

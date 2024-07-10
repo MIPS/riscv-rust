@@ -2,6 +2,7 @@
 //@ ignore-emscripten no processes
 //@ ignore-sgx no processes
 //@ ignore-fuchsia Child I/O swaps not privileged
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 // Previously libstd would set stdio descriptors of a child process
 // by `dup`ing the requested descriptors to inherit directly into the

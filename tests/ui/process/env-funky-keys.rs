@@ -7,6 +7,7 @@
 //@ ignore-sgx no execve
 //@ ignore-vxworks no execve
 //@ ignore-fuchsia no 'execve'
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 //@ no-prefer-dynamic
 
 #![feature(rustc_private)]

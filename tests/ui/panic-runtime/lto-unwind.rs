@@ -6,6 +6,7 @@
 //@ no-prefer-dynamic
 //@ ignore-emscripten no processes
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::process::Command;
 use std::env;

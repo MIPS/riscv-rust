@@ -1,6 +1,7 @@
 //@ run-pass
 //@ ignore-wasm32 spawning processes is not supported
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::{env, process};
 

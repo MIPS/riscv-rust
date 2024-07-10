@@ -5,6 +5,7 @@
 //@ ignore-fuchsia
 //@ ignore-horizon
 //@ ignore-android
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 //@ normalize-stderr-test ".rs:\d+:\d+" -> ".rs:LL:CC"
 //@ compile-flags: -Zon-broken-pipe=error
 

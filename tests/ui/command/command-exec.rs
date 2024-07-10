@@ -5,6 +5,7 @@
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
 //@ ignore-fuchsia no execvp syscall provided
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(process_exec)]
 

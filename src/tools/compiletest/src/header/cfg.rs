@@ -180,6 +180,11 @@ pub(super) fn parse_cfg_name_directive<'a>(
         message: "when cross-compiling"
     }
     condition! {
+        name: "riscv64-mti-linux-gnu-cross-compile",
+        condition: config.target != config.host && config.target == "riscv64-mti-linux-gnu",
+        message: "when cross-compiling for target riscv64-mti-linux-gnu"
+    }
+    condition! {
         name: "endian-big",
         condition: config.is_big_endian(),
         message: "on big-endian targets",

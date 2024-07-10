@@ -43,6 +43,7 @@ level = "warn"
 # for rust-lang/rust. But for users of `-Zbuild-std` it does.
 check-cfg = [
     'cfg(bootstrap)',
+    'cfg(target_vendor, values("mti"))',
     'cfg(no_fp_fmt_parse)',
     'cfg(stdarch_intel_sde)',
     # core use #[path] imports to portable-simd `core_simd` crate

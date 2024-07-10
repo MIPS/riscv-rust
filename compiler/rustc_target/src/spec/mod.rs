@@ -1840,6 +1840,7 @@ supported_targets! {
 
     ("x86_64-unknown-linux-none", x86_64_unknown_linux_none),
 
+    ("riscv64-mti-linux-gnu", riscv64_mti_linux_gnu),
 }
 
 /// Cow-Vec-Str: Cow<'static, [Cow<'static, str>]>

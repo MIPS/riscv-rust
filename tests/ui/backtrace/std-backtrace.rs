@@ -5,6 +5,7 @@
 //@ ignore-sgx no processes
 //@ ignore-msvc see #62897 and `backtrace-debuginfo.rs` test
 //@ ignore-fuchsia Backtraces not symbolized
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 //@ compile-flags:-g
 //@ compile-flags:-Cstrip=none
 
