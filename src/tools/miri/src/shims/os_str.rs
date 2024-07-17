@@ -30,17 +30,13 @@ pub fn bytes_to_os_str<'tcx>(bytes: &[u8]) -> InterpResult<'tcx, &OsStr> {
     Ok(OsStr::new(s))
 }
 
-impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriInterpCx<'mir, 'tcx> {}
-pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
+impl<'tcx> EvalContextExt<'tcx> for crate::MiriInterpCx<'tcx> {}
+pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
     /// Helper function to read an OsString from a null-terminated sequence of bytes, which is what
     /// the Unix APIs usually handle.
-    fn read_os_str_from_c_str<'a>(
-        &'a self,
-        ptr: Pointer<Option<Provenance>>,
-    ) -> InterpResult<'tcx, &'a OsStr>
+    fn read_os_str_from_c_str<'a>(&'a self, ptr: Pointer) -> InterpResult<'tcx, &'a OsStr>
     where
         'tcx: 'a,
-        'mir: 'a,
     {
         let this = self.eval_context_ref();
         let bytes = this.read_c_str(ptr)?;
@@ -49,13 +45,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
 
     /// Helper function to read an OsString from a 0x0000-terminated sequence of u16,
     /// which is what the Windows APIs usually handle.
-    fn read_os_str_from_wide_str<'a>(
-        &'a self,
-        ptr: Pointer<Option<Provenance>>,
-    ) -> InterpResult<'tcx, OsString>
+    fn read_os_str_from_wide_str<'a>(&'a self, ptr: Pointer) -> InterpResult<'tcx, OsString>
     where
         'tcx: 'a,
-        'mir: 'a,
     {
         #[cfg(windows)]
         pub fn u16vec_to_osstring<'tcx>(u16_vec: Vec<u16>) -> InterpResult<'tcx, OsString> {
@@ -72,37 +64,25 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         u16vec_to_osstring(u16_vec)
     }
 
-    /// Helper function to write an OsStr as a null-terminated sequence of bytes, which is what
-    /// the Unix APIs usually handle. This function returns `Ok((false, length))` without trying
-    /// to write if `size` is not large enough to fit the contents of `os_string` plus a null
-    /// terminator. It returns `Ok((true, length))` if the writing process was successful. The
-    /// string length returned does include the null terminator.
+    /// Helper function to write an OsStr as a null-terminated sequence of bytes, which is what the
+    /// Unix APIs usually handle. Returns `(success, full_len)`, where length includes the null
+    /// terminator. On failure, nothing is written.
     fn write_os_str_to_c_str(
         &mut self,
         os_str: &OsStr,
-        ptr: Pointer<Option<Provenance>>,
+        ptr: Pointer,
         size: u64,
     ) -> InterpResult<'tcx, (bool, u64)> {
         let bytes = os_str.as_encoded_bytes();
         self.eval_context_mut().write_c_str(bytes, ptr, size)
     }
 
-    /// Helper function to write an OsStr as a 0x0000-terminated u16-sequence, which is what the
-    /// Windows APIs usually handle.
-    ///
-    /// If `truncate == false` (the usual mode of operation), this function returns `Ok((false,
-    /// length))` without trying to write if `size` is not large enough to fit the contents of
-    /// `os_string` plus a null terminator. It returns `Ok((true, length))` if the writing process
-    /// was successful. The string length returned does include the null terminator. Length is
-    /// measured in units of `u16.`
-    ///
-    /// If `truncate == true`, then in case `size` is not large enough it *will* write the first
-    /// `size.saturating_sub(1)` many items, followed by a null terminator (if `size > 0`).
-    /// The return value is still `(false, length)` in that case.
-    fn write_os_str_to_wide_str(
+    /// Internal helper to share code between `write_os_str_to_wide_str` and
+    /// `write_os_str_to_wide_str_truncated`.
+    fn write_os_str_to_wide_str_helper(
         &mut self,
         os_str: &OsStr,
-        ptr: Pointer<Option<Provenance>>,
+        ptr: Pointer,
         size: u64,
         truncate: bool,
     ) -> InterpResult<'tcx, (bool, u64)> {
@@ -133,13 +113,36 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         Ok((written, size_needed))
     }
 
+    /// Helper function to write an OsStr as a 0x0000-terminated u16-sequence, which is what the
+    /// Windows APIs usually handle. Returns `(success, full_len)`, where length is measured
+    /// in units of `u16` and includes the null terminator. On failure, nothing is written.
+    fn write_os_str_to_wide_str(
+        &mut self,
+        os_str: &OsStr,
+        ptr: Pointer,
+        size: u64,
+    ) -> InterpResult<'tcx, (bool, u64)> {
+        self.write_os_str_to_wide_str_helper(os_str, ptr, size, /*truncate*/ false)
+    }
+
+    /// Like `write_os_str_to_wide_str`, but on failure as much as possible is written into
+    /// the buffer (always with a null terminator).
+    fn write_os_str_to_wide_str_truncated(
+        &mut self,
+        os_str: &OsStr,
+        ptr: Pointer,
+        size: u64,
+    ) -> InterpResult<'tcx, (bool, u64)> {
+        self.write_os_str_to_wide_str_helper(os_str, ptr, size, /*truncate*/ true)
+    }
+
     /// Allocate enough memory to store the given `OsStr` as a null-terminated sequence of bytes.
     fn alloc_os_str_as_c_str(
         &mut self,
         os_str: &OsStr,
         memkind: MemoryKind,
-    ) -> InterpResult<'tcx, Pointer<Option<Provenance>>> {
-        let size = u64::try_from(os_str.len()).unwrap().checked_add(1).unwrap(); // Make space for `0` terminator.
+    ) -> InterpResult<'tcx, Pointer> {
+        let size = u64::try_from(os_str.len()).unwrap().strict_add(1); // Make space for `0` terminator.
         let this = self.eval_context_mut();
 
         let arg_type = Ty::new_array(this.tcx.tcx, this.tcx.types.u8, size);
@@ -154,27 +157,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         &mut self,
         os_str: &OsStr,
         memkind: MemoryKind,
-    ) -> InterpResult<'tcx, Pointer<Option<Provenance>>> {
-        let size = u64::try_from(os_str.len()).unwrap().checked_add(1).unwrap(); // Make space for `0x0000` terminator.
+    ) -> InterpResult<'tcx, Pointer> {
+        let size = u64::try_from(os_str.len()).unwrap().strict_add(1); // Make space for `0x0000` terminator.
         let this = self.eval_context_mut();
 
         let arg_type = Ty::new_array(this.tcx.tcx, this.tcx.types.u16, size);
         let arg_place = this.allocate(this.layout_of(arg_type).unwrap(), memkind)?;
-        let (written, _) = self
-            .write_os_str_to_wide_str(os_str, arg_place.ptr(), size, /*truncate*/ false)
-            .unwrap();
+        let (written, _) = self.write_os_str_to_wide_str(os_str, arg_place.ptr(), size).unwrap();
         assert!(written);
         Ok(arg_place.ptr())
     }
 
     /// Read a null-terminated sequence of bytes, and perform path separator conversion if needed.
-    fn read_path_from_c_str<'a>(
-        &'a self,
-        ptr: Pointer<Option<Provenance>>,
-    ) -> InterpResult<'tcx, Cow<'a, Path>>
+    fn read_path_from_c_str<'a>(&'a self, ptr: Pointer) -> InterpResult<'tcx, Cow<'a, Path>>
     where
         'tcx: 'a,
-        'mir: 'a,
     {
         let this = self.eval_context_ref();
         let os_str = this.read_os_str_from_c_str(ptr)?;
@@ -186,10 +183,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     }
 
     /// Read a null-terminated sequence of `u16`s, and perform path separator conversion if needed.
-    fn read_path_from_wide_str(
-        &self,
-        ptr: Pointer<Option<Provenance>>,
-    ) -> InterpResult<'tcx, PathBuf> {
+    fn read_path_from_wide_str(&self, ptr: Pointer) -> InterpResult<'tcx, PathBuf> {
         let this = self.eval_context_ref();
         let os_str = this.read_os_str_from_wide_str(ptr)?;
 
@@ -201,7 +195,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     fn write_path_to_c_str(
         &mut self,
         path: &Path,
-        ptr: Pointer<Option<Provenance>>,
+        ptr: Pointer,
         size: u64,
     ) -> InterpResult<'tcx, (bool, u64)> {
         let this = self.eval_context_mut();
@@ -215,14 +209,27 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
     fn write_path_to_wide_str(
         &mut self,
         path: &Path,
-        ptr: Pointer<Option<Provenance>>,
+        ptr: Pointer,
         size: u64,
-        truncate: bool,
     ) -> InterpResult<'tcx, (bool, u64)> {
         let this = self.eval_context_mut();
         let os_str =
             this.convert_path(Cow::Borrowed(path.as_os_str()), PathConversion::HostToTarget);
-        this.write_os_str_to_wide_str(&os_str, ptr, size, truncate)
+        this.write_os_str_to_wide_str(&os_str, ptr, size)
+    }
+
+    /// Write a Path to the machine memory (as a null-terminated sequence of `u16`s),
+    /// adjusting path separators if needed.
+    fn write_path_to_wide_str_truncated(
+        &mut self,
+        path: &Path,
+        ptr: Pointer,
+        size: u64,
+    ) -> InterpResult<'tcx, (bool, u64)> {
+        let this = self.eval_context_mut();
+        let os_str =
+            this.convert_path(Cow::Borrowed(path.as_os_str()), PathConversion::HostToTarget);
+        this.write_os_str_to_wide_str_truncated(&os_str, ptr, size)
     }
 
     /// Allocate enough memory to store a Path as a null-terminated sequence of bytes,
@@ -231,7 +238,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         &mut self,
         path: &Path,
         memkind: MemoryKind,
-    ) -> InterpResult<'tcx, Pointer<Option<Provenance>>> {
+    ) -> InterpResult<'tcx, Pointer> {
         let this = self.eval_context_mut();
         let os_str =
             this.convert_path(Cow::Borrowed(path.as_os_str()), PathConversion::HostToTarget);
@@ -244,7 +251,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         &mut self,
         path: &Path,
         memkind: MemoryKind,
-    ) -> InterpResult<'tcx, Pointer<Option<Provenance>>> {
+    ) -> InterpResult<'tcx, Pointer> {
         let this = self.eval_context_mut();
         let os_str =
             this.convert_path(Cow::Borrowed(path.as_os_str()), PathConversion::HostToTarget);

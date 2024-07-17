@@ -7,6 +7,7 @@
 //@ only-linux
 //@ no-prefer-dynamic
 //@ compile-flags: -Ctarget-feature=+crt-static -Crpath=no -Crelocation-model=static
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 #![feature(exit_status_error)]
 #![feature(rustc_private)]
 extern crate libc;

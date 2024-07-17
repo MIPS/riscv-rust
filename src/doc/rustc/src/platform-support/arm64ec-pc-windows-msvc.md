@@ -1,6 +1,6 @@
 # `arm64ec-pc-windows-msvc`
 
-**Tier: 3**
+**Tier: 2**
 
 Arm64EC ("Emulation Compatible") for mixed architecture (AArch64 and x86_64)
 applications on AArch64 Windows 11. See <https://learn.microsoft.com/en-us/windows/arm/arm64ec>.
@@ -20,6 +20,9 @@ Only supported backend is LLVM 18 or above:
 * 18.1.2 fixed import library generation (required for `raw-dylib` support).
 * 18.1.4 fixed linking issue for some intrinsics implemented in
   `compiler_builtins`.
+
+Visual Studio 2022 (or above) with the "ARM64/ARM64EC built tools" component and
+the Windows 11 SDK are required.
 
 ### Reusing code from other architectures - x86_64 or AArch64?
 
@@ -62,10 +65,8 @@ target = [ "arm64ec-pc-windows-msvc" ]
 
 ## Building Rust programs
 
-Rust does not yet ship pre-compiled artifacts for this target. To compile for
-this target, you will either need to build Rust with the target enabled (see
-"Building the target" above), or build your own copy using `build-std` or
-similar.
+These targets are distributed through `rustup`, and otherwise require no
+special configuration.
 
 ## Testing
 
@@ -73,7 +74,7 @@ Tests can be run on AArch64 Windows 11 devices.
 
 ## Cross-compilation toolchains and C code
 
-C code can be built using the Arm64-targetting MSVC or Clang toolchain.
+C code can be built using the Arm64-targeting MSVC or Clang toolchain.
 
 To compile:
 

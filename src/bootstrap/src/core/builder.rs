@@ -4,18 +4,17 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Write};
-use std::fs::{self, File};
+use std::fs;
 use std::hash::Hash;
-use std::io::{BufRead, BufReader};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::core::build_steps::tool::{self, SourceType};
-use crate::core::build_steps::{check, clean, compile, dist, doc, install, run, setup, test};
-use crate::core::build_steps::{clippy, llvm};
+use crate::core::build_steps::{
+    check, clean, clippy, compile, dist, doc, install, llvm, run, setup, test, vendor,
+};
 use crate::core::config::flags::{Color, Subcommand};
 use crate::core::config::{DryRun, SplitDebuginfo, TargetSelection};
 use crate::prepare_behaviour_dump_dir;
@@ -34,13 +33,34 @@ use once_cell::sync::Lazy;
 #[cfg(test)]
 mod tests;
 
+/// Builds and performs different [`Self::kind`]s of stuff and actions, taking
+/// into account build configuration from e.g. config.toml.
 pub struct Builder<'a> {
+    /// Build configuration from e.g. config.toml.
     pub build: &'a Build,
+
+    /// The stage to use. Either implicitly determined based on subcommand, or
+    /// explicitly specified with `--stage N`. Normally this is the stage we
+    /// use, but sometimes we want to run steps with a lower stage than this.
     pub top_stage: u32,
+
+    /// What to build or what action to perform.
     pub kind: Kind,
+
+    /// A cache of outputs of [`Step`]s so we can avoid running steps we already
+    /// ran.
     cache: Cache,
+
+    /// A stack of [`Step`]s to run before we can run this builder. The output
+    /// of steps is cached in [`Self::cache`].
     stack: RefCell<Vec<Box<dyn Any>>>,
+
+    /// The total amount of time we spent running [`Step`]s in [`Self::stack`].
     time_spent_on_dependencies: Cell<Duration>,
+
+    /// The paths passed on the command line. Used by steps to figure out what
+    /// to do. For example: with `./x check foo bar` we get `paths=["foo",
+    /// "bar"]`.
     pub paths: Vec<PathBuf>,
 }
 
@@ -66,6 +86,9 @@ pub trait Step: 'static + Clone + Debug + PartialEq + Eq + Hash {
 
     /// Primary function to execute this rule. Can call `builder.ensure()`
     /// with other steps to run those.
+    ///
+    /// This gets called twice during a normal `./x.py` execution: first
+    /// with `dry_run() == true`, and then for real.
     fn run(self, builder: &Builder<'_>) -> Self::Output;
 
     /// When bootstrap is passed a set of paths, this controls whether this rule
@@ -249,7 +272,7 @@ impl PathSet {
     /// This is used for `StepDescription::krate`, which passes all matching crates at once to
     /// `Step::make_run`, rather than calling it many times with a single crate.
     /// See `tests.rs` for examples.
-    fn intersection_removing_matches(&self, needles: &mut Vec<&Path>, module: Kind) -> PathSet {
+    fn intersection_removing_matches(&self, needles: &mut Vec<PathBuf>, module: Kind) -> PathSet {
         let mut check = |p| {
             for (i, n) in needles.iter().enumerate() {
                 let matched = Self::check(p, n, module);
@@ -295,17 +318,18 @@ const PATH_REMAP: &[(&str, &[&str])] = &[
     (
         "tests",
         &[
+            // tidy-alphabetical-start
             "tests/assembly",
             "tests/codegen",
             "tests/codegen-units",
             "tests/coverage",
             "tests/coverage-run-rustdoc",
+            "tests/crashes",
             "tests/debuginfo",
             "tests/incremental",
             "tests/mir-opt",
             "tests/pretty",
             "tests/run-make",
-            "tests/run-make-fulldeps",
             "tests/run-pass-valgrind",
             "tests/rustdoc",
             "tests/rustdoc-gui",
@@ -315,11 +339,12 @@ const PATH_REMAP: &[(&str, &[&str])] = &[
             "tests/rustdoc-ui",
             "tests/ui",
             "tests/ui-fulldeps",
+            // tidy-alphabetical-end
         ],
     ),
 ];
 
-fn remap_paths(paths: &mut Vec<&Path>) {
+fn remap_paths(paths: &mut Vec<PathBuf>) {
     let mut remove = vec![];
     let mut add = vec![];
     for (i, path) in paths.iter().enumerate().filter_map(|(i, path)| path.to_str().map(|s| (i, s)))
@@ -328,7 +353,7 @@ fn remap_paths(paths: &mut Vec<&Path>) {
             // Remove leading and trailing slashes so `tests/` and `tests` are equivalent
             if path.trim_matches(std::path::is_separator) == search {
                 remove.push(i);
-                add.extend(replace.iter().map(Path::new));
+                add.extend(replace.iter().map(PathBuf::from));
                 break;
             }
         }
@@ -411,8 +436,25 @@ impl StepDescription {
             }
         }
 
-        // strip CurDir prefix if present
-        let mut paths: Vec<_> = paths.iter().map(|p| p.strip_prefix(".").unwrap_or(p)).collect();
+        // Attempt to resolve paths to be relative to the builder source directory.
+        let mut paths: Vec<PathBuf> = paths
+            .iter()
+            .map(|p| {
+                // If the path does not exist, it may represent the name of a Step, such as `tidy` in `x test tidy`
+                if !p.exists() {
+                    return p.clone();
+                }
+
+                // Make the path absolute, strip the prefix, and convert to a PathBuf.
+                match std::path::absolute(p) {
+                    Ok(p) => p.strip_prefix(&builder.src).unwrap_or(&p).to_path_buf(),
+                    Err(e) => {
+                        eprintln!("ERROR: {:?}", e);
+                        panic!("Due to the above error, failed to resolve path: {:?}", p);
+                    }
+                }
+            })
+            .collect();
 
         remap_paths(&mut paths);
 
@@ -550,7 +592,7 @@ impl<'a> ShouldRun<'a> {
     ///
     /// [`path`]: ShouldRun::path
     pub fn paths(mut self, paths: &[&str]) -> Self {
-        let submodules_paths = self.builder.get_all_submodules();
+        let submodules_paths = build_helper::util::parse_gitmodules(&self.builder.src);
 
         self.paths.insert(PathSet::Set(
             paths
@@ -602,7 +644,7 @@ impl<'a> ShouldRun<'a> {
     /// (for now, just `all_krates` and `paths`, but we may want to add an `aliases` function in the future?)
     fn pathset_for_paths_removing_matches(
         &self,
-        paths: &mut Vec<&Path>,
+        paths: &mut Vec<PathBuf>,
         kind: Kind,
     ) -> Vec<PathSet> {
         let mut sets = vec![];
@@ -638,6 +680,8 @@ pub enum Kind {
     Run,
     Setup,
     Suggest,
+    Vendor,
+    Perf,
 }
 
 impl Kind {
@@ -658,6 +702,8 @@ impl Kind {
             Kind::Run => "run",
             Kind::Setup => "setup",
             Kind::Suggest => "suggest",
+            Kind::Vendor => "vendor",
+            Kind::Perf => "perf",
         }
     }
 
@@ -669,6 +715,7 @@ impl Kind {
             Kind::Run => "Running",
             Kind::Suggest => "Suggesting",
             Kind::Clippy => "Linting",
+            Kind::Perf => "Profiling & benchmarking",
             _ => {
                 let title_letter = self.as_str()[0..1].to_ascii_uppercase();
                 return format!("{title_letter}{}ing", &self.as_str()[1..]);
@@ -707,7 +754,6 @@ impl<'a> Builder<'a> {
                 tool::Rls,
                 tool::RustAnalyzer,
                 tool::RustAnalyzerProcMacroSrv,
-                tool::RustDemangler,
                 tool::Rustdoc,
                 tool::Clippy,
                 tool::CargoClippy,
@@ -721,7 +767,8 @@ impl<'a> Builder<'a> {
                 tool::RustdocGUITest,
                 tool::OptimizedDist,
                 tool::CoverageDump,
-                tool::LlvmBitcodeLinker
+                tool::LlvmBitcodeLinker,
+                tool::RustcPerf,
             ),
             Kind::Clippy => describe!(
                 clippy::Std,
@@ -745,7 +792,6 @@ impl<'a> Builder<'a> {
                 clippy::RemoteTestServer,
                 clippy::Rls,
                 clippy::RustAnalyzer,
-                clippy::RustDemangler,
                 clippy::Rustdoc,
                 clippy::Rustfmt,
                 clippy::RustInstaller,
@@ -767,7 +813,6 @@ impl<'a> Builder<'a> {
             ),
             Kind::Test => describe!(
                 crate::core::build_steps::toolstate::ToolStateCheck,
-                test::ExpandYamlAnchors,
                 test::Tidy,
                 test::Ui,
                 test::Crashes,
@@ -799,7 +844,6 @@ impl<'a> Builder<'a> {
                 test::RustAnalyzer,
                 test::ErrorIndex,
                 test::Distcheck,
-                test::RunMakeFullDeps,
                 test::Nomicon,
                 test::Reference,
                 test::RustdocBook,
@@ -815,8 +859,8 @@ impl<'a> Builder<'a> {
                 test::Miri,
                 test::CargoMiri,
                 test::Clippy,
-                test::RustDemangler,
                 test::CompiletestTest,
+                test::CrateRunMakeSupport,
                 test::RustdocJSStd,
                 test::RustdocJSNotStd,
                 test::RustdocGUI,
@@ -858,6 +902,7 @@ impl<'a> Builder<'a> {
                 doc::Tidy,
                 doc::Bootstrap,
                 doc::Releases,
+                doc::RunMakeSupport,
             ),
             Kind::Dist => describe!(
                 dist::Docs,
@@ -874,7 +919,6 @@ impl<'a> Builder<'a> {
                 dist::Rls,
                 dist::RustAnalyzer,
                 dist::Rustfmt,
-                dist::RustDemangler,
                 dist::Clippy,
                 dist::Miri,
                 dist::LlvmTools,
@@ -901,14 +945,12 @@ impl<'a> Builder<'a> {
                 install::Cargo,
                 install::RustAnalyzer,
                 install::Rustfmt,
-                install::RustDemangler,
                 install::Clippy,
                 install::Miri,
                 install::LlvmTools,
                 install::Src,
             ),
             Kind::Run => describe!(
-                run::ExpandYamlAnchors,
                 run::BuildManifest,
                 run::BumpStage0,
                 run::ReplaceVersionPlaceholder,
@@ -920,8 +962,9 @@ impl<'a> Builder<'a> {
             ),
             Kind::Setup => describe!(setup::Profile, setup::Hook, setup::Link, setup::Vscode),
             Kind::Clean => describe!(clean::CleanAll, clean::Rustc, clean::Std),
+            Kind::Vendor => describe!(vendor::Vendor),
             // special-cased in Build::build()
-            Kind::Format | Kind::Suggest => vec![],
+            Kind::Format | Kind::Suggest | Kind::Perf => vec![],
         }
     }
 
@@ -992,6 +1035,8 @@ impl<'a> Builder<'a> {
                 Kind::Setup,
                 path.as_ref().map_or([].as_slice(), |path| std::slice::from_ref(path)),
             ),
+            Subcommand::Vendor { .. } => (Kind::Vendor, &paths[..]),
+            Subcommand::Perf { .. } => (Kind::Perf, &paths[..]),
         };
 
         Self::new_internal(build, kind, paths.to_owned())
@@ -1013,7 +1058,8 @@ impl<'a> Builder<'a> {
             // custom build of rustdoc maybe? link to the latest stable docs just in case
             _ => "stable",
         };
-        "https://doc.rust-lang.org/".to_owned() + channel
+
+        format!("https://doc.rust-lang.org/{channel}")
     }
 
     fn run_step_descriptions(&self, v: &[StepDescription], paths: &[PathBuf]) {
@@ -1524,7 +1570,6 @@ impl<'a> Builder<'a> {
         // features but cargo isn't involved in the #[path] process and so cannot pass the
         // complete list of features, so for that reason we don't enable checking of
         // features for std crates.
-        cargo.arg("-Zcheck-cfg");
         if mode == Mode::Std {
             rustflags.arg("--check-cfg=cfg(feature,values(any()))");
         }
@@ -2099,13 +2144,10 @@ impl<'a> Builder<'a> {
             // during incremental builds" heuristic for the standard library.
             rustflags.arg("-Zinline-mir");
 
-            // FIXME: always pass this after the next `#[cfg(bootstrap)]` update.
-            if compiler.stage != 0 {
-                // Similarly, we need to keep debug info for functions inlined into other std functions,
-                // even if we're not going to output debuginfo for the crate we're currently building,
-                // so that it'll be available when downstream consumers of std try to use it.
-                rustflags.arg("-Zinline-mir-preserve-debug");
-            }
+            // Similarly, we need to keep debug info for functions inlined into other std functions,
+            // even if we're not going to output debuginfo for the crate we're currently building,
+            // so that it'll be available when downstream consumers of std try to use it.
+            rustflags.arg("-Zinline-mir-preserve-debug");
         }
 
         if self.config.rustc_parallel
@@ -2197,33 +2239,6 @@ impl<'a> Builder<'a> {
         self.verbose_than(1, || println!("{}< {:?}", "  ".repeat(self.stack.borrow().len()), step));
         self.cache.put(step, out.clone());
         out
-    }
-
-    /// Return paths of all submodules managed by git.
-    /// If the current checkout is not managed by git, returns an empty slice.
-    pub fn get_all_submodules(&self) -> &[String] {
-        if !self.rust_info().is_managed_git_subrepository() {
-            return &[];
-        }
-
-        static SUBMODULES_PATHS: OnceLock<Vec<String>> = OnceLock::new();
-
-        let init_submodules_paths = |src: &PathBuf| {
-            let file = File::open(src.join(".gitmodules")).unwrap();
-
-            let mut submodules_paths = vec![];
-            for line in BufReader::new(file).lines().map_while(Result::ok) {
-                let line = line.trim();
-                if line.starts_with("path") {
-                    let actual_path = line.split(' ').last().expect("Couldn't get value of path");
-                    submodules_paths.push(actual_path.to_owned());
-                }
-            }
-
-            submodules_paths
-        };
-
-        SUBMODULES_PATHS.get_or_init(|| init_submodules_paths(&self.src))
     }
 
     /// Ensure that a given step is built *only if it's supposed to be built by default*, returning
@@ -2532,7 +2547,12 @@ impl Cargo {
         // FIXME: the guard against msvc shouldn't need to be here
         if target.is_msvc() {
             if let Some(ref cl) = builder.config.llvm_clang_cl {
-                self.command.env("CC", cl).env("CXX", cl);
+                // FIXME: There is a bug in Clang 18 when building for ARM64:
+                // https://github.com/llvm/llvm-project/pull/81849. This is
+                // fixed in LLVM 19, but can't be backported.
+                if !target.starts_with("aarch64") && !target.starts_with("arm64ec") {
+                    self.command.env("CC", cl).env("CXX", cl);
+                }
             }
         } else {
             let ccache = builder.config.ccache.as_ref();

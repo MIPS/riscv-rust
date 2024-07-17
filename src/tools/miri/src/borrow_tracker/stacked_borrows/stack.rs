@@ -2,6 +2,7 @@
 use std::ops::Range;
 
 use rustc_data_structures::fx::FxHashSet;
+use tracing::trace;
 
 use crate::borrow_tracker::{
     stacked_borrows::{Item, Permission},
@@ -9,7 +10,7 @@ use crate::borrow_tracker::{
 };
 use crate::ProvenanceExtra;
 
-/// Exactly what cache size we should use is a difficult tradeoff. There will always be some
+/// Exactly what cache size we should use is a difficult trade-off. There will always be some
 /// workload which has a `BorTag` working set which exceeds the size of the cache, and ends up
 /// falling back to linear searches of the borrow stack very often.
 /// The cost of making this value too large is that the loop in `Stack::insert` which ensures the
@@ -248,7 +249,7 @@ impl<'tcx> Stack {
     #[cfg(feature = "stack-cache")]
     fn find_granting_cache(&mut self, access: AccessKind, tag: BorTag) -> Option<usize> {
         // This looks like a common-sense optimization; we're going to do a linear search of the
-        // cache or the borrow stack to scan the shorter of the two. This optimization is miniscule
+        // cache or the borrow stack to scan the shorter of the two. This optimization is minuscule
         // and this check actually ensures we do not access an invalid cache.
         // When a stack is created and when items are removed from the top of the borrow stack, we
         // need some valid value to populate the cache. In both cases, we try to use the bottom

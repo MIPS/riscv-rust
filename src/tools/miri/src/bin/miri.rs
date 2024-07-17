@@ -8,7 +8,6 @@
 )]
 
 // Some "regular" crates we want to share with rustc
-#[macro_use]
 extern crate tracing;
 
 // The rustc crates we need
@@ -25,6 +24,8 @@ use std::env::{self, VarError};
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+use tracing::debug;
 
 use rustc_data_structures::sync::Lrc;
 use rustc_driver::Compilation;
@@ -405,9 +406,12 @@ fn main() {
 
     let mut rustc_args = vec![];
     let mut after_dashdash = false;
-
     // If user has explicitly enabled/disabled isolation
     let mut isolation_enabled: Option<bool> = None;
+
+    // Note that we require values to be given with `=`, not with a space.
+    // This matches how rustc parses `-Z`.
+    // However, unlike rustc we do not accept a space after `-Z`.
     for arg in args {
         if rustc_args.is_empty() {
             // Very first arg: binary name.
@@ -506,6 +510,11 @@ fn main() {
             );
         } else if let Some(param) = arg.strip_prefix("-Zmiri-env-forward=") {
             miri_config.forwarded_env_vars.push(param.to_owned());
+        } else if let Some(param) = arg.strip_prefix("-Zmiri-env-set=") {
+            let Some((name, value)) = param.split_once('=') else {
+                show_error!("-Zmiri-env-set requires an argument of the form <name>=<value>");
+            };
+            miri_config.set_env_vars.insert(name.to_owned(), value.to_owned());
         } else if let Some(param) = arg.strip_prefix("-Zmiri-track-pointer-tag=") {
             let ids: Vec<u64> = parse_comma_list(param).unwrap_or_else(|err| {
                 show_error!("-Zmiri-track-pointer-tag requires a comma separated list of valid `u64` arguments: {err}")
@@ -570,18 +579,15 @@ fn main() {
                 "full" => BacktraceStyle::Full,
                 _ => show_error!("-Zmiri-backtrace may only be 0, 1, or full"),
             };
-        } else if let Some(param) = arg.strip_prefix("-Zmiri-extern-so-file=") {
+        } else if let Some(param) = arg.strip_prefix("-Zmiri-native-lib=") {
             let filename = param.to_string();
             if std::path::Path::new(&filename).exists() {
-                if let Some(other_filename) = miri_config.external_so_file {
-                    show_error!(
-                        "-Zmiri-extern-so-file is already set to {}",
-                        other_filename.display()
-                    );
+                if let Some(other_filename) = miri_config.native_lib {
+                    show_error!("-Zmiri-native-lib is already set to {}", other_filename.display());
                 }
-                miri_config.external_so_file = Some(filename.into());
+                miri_config.native_lib = Some(filename.into());
             } else {
-                show_error!("-Zmiri-extern-so-file `{}` does not exist", filename);
+                show_error!("-Zmiri-native-lib `{}` does not exist", filename);
             }
         } else if let Some(param) = arg.strip_prefix("-Zmiri-num-cpus=") {
             let num_cpus = param

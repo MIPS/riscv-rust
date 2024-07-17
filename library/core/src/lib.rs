@@ -90,7 +90,7 @@
 ))]
 #![no_core]
 #![rustc_coherence_is_core]
-#![cfg_attr(not(bootstrap), rustc_preserve_ub_checks)]
+#![rustc_preserve_ub_checks]
 //
 // Lints:
 #![deny(rust_2021_incompatible_or_patterns)]
@@ -109,7 +109,6 @@
 //
 // Library features:
 // tidy-alphabetical-start
-#![cfg_attr(bootstrap, feature(associated_type_bounds))]
 #![feature(array_ptr_get)]
 #![feature(asm_experimental_arch)]
 #![feature(char_indices_offset)]
@@ -141,7 +140,6 @@
 #![feature(const_likely)]
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_maybe_uninit_assume_init)]
-#![feature(const_maybe_uninit_uninit_array)]
 #![feature(const_nonnull_new)]
 #![feature(const_num_midpoint)]
 #![feature(const_option)]
@@ -175,12 +173,9 @@
 #![feature(duration_consts_float)]
 #![feature(internal_impls_macro)]
 #![feature(ip)]
-#![feature(ip_bits)]
 #![feature(is_ascii_octdigit)]
 #![feature(isqrt)]
 #![feature(link_cfg)]
-#![feature(maybe_uninit_uninit_array)]
-#![feature(non_null_convenience)]
 #![feature(offset_of_enum)]
 #![feature(offset_of_nested)]
 #![feature(panic_internals)]
@@ -188,11 +183,12 @@
 #![feature(ptr_metadata)]
 #![feature(set_ptr_value)]
 #![feature(slice_ptr_get)]
-#![feature(split_at_checked)]
 #![feature(str_internals)]
 #![feature(str_split_inclusive_remainder)]
 #![feature(str_split_remainder)]
 #![feature(strict_provenance)]
+#![feature(ub_checks)]
+#![feature(unchecked_neg)]
 #![feature(unchecked_shifts)]
 #![feature(utf16_extra)]
 #![feature(utf16_extra_const)]
@@ -201,29 +197,27 @@
 //
 // Language features:
 // tidy-alphabetical-start
+#![cfg_attr(bootstrap, feature(c_unwind))]
+#![cfg_attr(bootstrap, feature(effects))]
 #![feature(abi_unadjusted)]
 #![feature(adt_const_params)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
 #![feature(asm_const)]
 #![feature(auto_traits)]
-#![feature(c_unwind)]
 #![feature(cfg_sanitize)]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_has_atomic_equal_alignment)]
-#![feature(const_closures)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_for)]
 #![feature(const_mut_refs)]
 #![feature(const_precise_live_drops)]
 #![feature(const_refs_to_cell)]
-#![feature(const_trait_impl)]
 #![feature(decl_macro)]
 #![feature(deprecated_suggestion)]
 #![feature(doc_cfg)]
 #![feature(doc_cfg_hide)]
 #![feature(doc_notable_trait)]
-#![feature(effects)]
 #![feature(extern_types)]
 #![feature(f128)]
 #![feature(f16)]
@@ -231,7 +225,6 @@
 #![feature(fundamental)]
 #![feature(generic_arg_infer)]
 #![feature(if_let_guard)]
-#![feature(inline_const)]
 #![feature(intra_doc_pointers)]
 #![feature(intrinsics)]
 #![feature(lang_items)]
@@ -370,7 +363,8 @@ pub mod hint;
 pub mod intrinsics;
 pub mod mem;
 pub mod ptr;
-mod ub_checks;
+#[unstable(feature = "ub_checks", issue = "none")]
+pub mod ub_checks;
 
 /* Core language traits */
 
@@ -401,7 +395,6 @@ pub mod net;
 pub mod option;
 pub mod panic;
 pub mod panicking;
-#[cfg(not(bootstrap))]
 #[unstable(feature = "core_pattern_types", issue = "none")]
 pub mod pat;
 pub mod pin;

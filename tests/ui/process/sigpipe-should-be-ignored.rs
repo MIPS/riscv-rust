@@ -6,6 +6,7 @@
 
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::env;
 use std::io::prelude::*;

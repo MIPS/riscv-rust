@@ -6,7 +6,7 @@ use rustc_data_structures::stable_hasher::{
 use rustc_data_structures::unhash::Unhasher;
 use rustc_data_structures::AtomicRef;
 use rustc_index::Idx;
-use rustc_macros::HashStable_Generic;
+use rustc_macros::{Decodable, Encodable, HashStable_Generic};
 use rustc_serialize::{Decodable, Encodable};
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -120,9 +120,11 @@ impl Default for DefPathHash {
     }
 }
 
-// Safety: `DefPathHash` sort order is not affected (de)serialization.
-unsafe impl StableOrd for DefPathHash {
+impl StableOrd for DefPathHash {
     const CAN_USE_UNSTABLE_SORT: bool = true;
+
+    // `DefPathHash` sort order is not affected by (de)serialization.
+    const THIS_IMPLEMENTATION_HAS_BEEN_TRIPLE_CHECKED: () = ();
 }
 
 /// A [`StableCrateId`] is a 64-bit hash of a crate name, together with all

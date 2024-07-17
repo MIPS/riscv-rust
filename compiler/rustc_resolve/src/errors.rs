@@ -1,4 +1,4 @@
-use rustc_errors::{codes::*, Applicability, MultiSpan};
+use rustc_errors::{codes::*, Applicability, ElidedLifetimeInPathSubdiag, MultiSpan};
 use rustc_macros::{Diagnostic, Subdiagnostic};
 use rustc_span::{
     symbol::{Ident, Symbol},
@@ -882,6 +882,23 @@ pub(crate) struct ElidedAnonymousLivetimeReportError {
     pub(crate) suggestion: Option<ElidedAnonymousLivetimeReportErrorSuggestion>,
 }
 
+#[derive(Diagnostic)]
+#[diag(resolve_lending_iterator_report_error)]
+pub(crate) struct LendingIteratorReportError {
+    #[primary_span]
+    pub(crate) lifetime: Span,
+    #[note]
+    pub(crate) ty: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(resolve_anonymous_livetime_non_gat_report_error)]
+pub(crate) struct AnonymousLivetimeNonGatReportError {
+    #[primary_span]
+    #[label]
+    pub(crate) lifetime: Span,
+}
+
 #[derive(Subdiagnostic)]
 #[multipart_suggestion(
     resolve_elided_anonymous_lifetime_report_error_suggestion,
@@ -907,6 +924,8 @@ pub(crate) struct ExplicitAnonymousLivetimeReportError {
 pub(crate) struct ImplicitElidedLifetimeNotAllowedHere {
     #[primary_span]
     pub(crate) span: Span,
+    #[subdiagnostic]
+    pub(crate) subdiag: ElidedLifetimeInPathSubdiag,
 }
 
 #[derive(Diagnostic)]

@@ -43,7 +43,7 @@ pub struct Std {
     /// This shouldn't be used from other steps; see the comment on [`Rustc`].
     crates: Vec<String>,
     /// When using download-rustc, we need to use a new build of `std` for running unit tests of Std itself,
-    /// but we need to use the downloaded copy of std for linking to rustdoc. Allow this to be overriden by `builder.ensure` from other steps.
+    /// but we need to use the downloaded copy of std for linking to rustdoc. Allow this to be overridden by `builder.ensure` from other steps.
     force_recompile: bool,
     extra_rust_args: &'static [&'static str],
     is_for_mir_opt_tests: bool,
@@ -1006,6 +1006,10 @@ pub fn rustc_cargo(
 
     cargo.rustdocflag("-Zcrate-attr=warn(rust_2018_idioms)");
 
+    // If the rustc output is piped to e.g. `head -n1` we want the process to be
+    // killed, rather than having an error bubble up and cause a panic.
+    cargo.rustflag("-Zon-broken-pipe=kill");
+
     // We currently don't support cross-crate LTO in stage0. This also isn't hugely necessary
     // and may just be a time sink.
     if compiler.stage != 0 {
@@ -1127,6 +1131,13 @@ pub fn rustc_cargo_env(
         cargo.env("CFG_DEFAULT_LINKER", s);
     } else if let Some(ref s) = builder.config.rustc_default_linker {
         cargo.env("CFG_DEFAULT_LINKER", s);
+    }
+
+    // Enable rustc's env var for `rust-lld` when requested.
+    if builder.config.lld_enabled
+        && (builder.config.channel == "dev" || builder.config.channel == "nightly")
+    {
+        cargo.env("CFG_USE_SELF_CONTAINED_LINKER", "1");
     }
 
     if builder.config.rust_verify_llvm_ir {
@@ -1279,15 +1290,21 @@ fn needs_codegen_config(run: &RunConfig<'_>) -> bool {
 pub(crate) const CODEGEN_BACKEND_PREFIX: &str = "rustc_codegen_";
 
 fn is_codegen_cfg_needed(path: &TaskPath, run: &RunConfig<'_>) -> bool {
-    if path.path.to_str().unwrap().contains(CODEGEN_BACKEND_PREFIX) {
+    let path = path.path.to_str().unwrap();
+
+    let is_explicitly_called = |p| -> bool { run.builder.paths.contains(p) };
+    let should_enforce = run.builder.kind == Kind::Dist || run.builder.kind == Kind::Install;
+
+    if path.contains(CODEGEN_BACKEND_PREFIX) {
         let mut needs_codegen_backend_config = true;
         for backend in run.builder.config.codegen_backends(run.target) {
-            if path.path.to_str().unwrap().ends_with(&(CODEGEN_BACKEND_PREFIX.to_owned() + backend))
-            {
+            if path.ends_with(&(CODEGEN_BACKEND_PREFIX.to_owned() + backend)) {
                 needs_codegen_backend_config = false;
             }
         }
-        if needs_codegen_backend_config {
+        if (is_explicitly_called(&PathBuf::from(path)) || should_enforce)
+            && needs_codegen_backend_config
+        {
             run.builder.info(
                 "WARNING: no codegen-backends config matched the requested path to build a codegen backend. \
                 HELP: add backend to codegen-backends in config.toml.",

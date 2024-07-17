@@ -1,6 +1,7 @@
 //@ run-pass
 //@ needs-threads
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::thread;
 use std::env;

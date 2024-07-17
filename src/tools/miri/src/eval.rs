@@ -9,7 +9,7 @@ use std::thread;
 
 use crate::concurrency::thread::TlsAllocAction;
 use crate::diagnostics::report_leaks;
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::def::Namespace;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{
@@ -100,6 +100,8 @@ pub struct MiriConfig {
     pub ignore_leaks: bool,
     /// Environment variables that should always be forwarded from the host.
     pub forwarded_env_vars: Vec<String>,
+    /// Additional environment variables that should be set in the interpreted program.
+    pub set_env_vars: FxHashMap<String, String>,
     /// Command-line arguments passed to the interpreted program.
     pub args: Vec<String>,
     /// The seed to use when non-determinism or randomness are required (e.g. ptr-to-int cast, `getrandom()`).
@@ -140,8 +142,8 @@ pub struct MiriConfig {
     /// Whether Stacked Borrows and Tree Borrows retagging should recurse into fields of datatypes.
     pub retag_fields: RetagFields,
     /// The location of a shared object file to load when calling external functions
-    /// FIXME! consider allowing users to specify paths to multiple SO files, or to a directory
-    pub external_so_file: Option<PathBuf>,
+    /// FIXME! consider allowing users to specify paths to multiple files, or to a directory
+    pub native_lib: Option<PathBuf>,
     /// Run a garbage collector for BorTags every N basic blocks.
     pub gc_interval: u32,
     /// The number of CPUs to be reported by miri.
@@ -167,6 +169,7 @@ impl Default for MiriConfig {
             isolated_op: IsolatedOp::Reject(RejectOpWith::Abort),
             ignore_leaks: false,
             forwarded_env_vars: vec![],
+            set_env_vars: FxHashMap::default(),
             args: vec![],
             seed: None,
             tracked_pointer_tags: FxHashSet::default(),
@@ -185,7 +188,7 @@ impl Default for MiriConfig {
             preemption_rate: 0.01, // 1%
             report_progress: None,
             retag_fields: RetagFields::Yes,
-            external_so_file: None,
+            native_lib: None,
             gc_interval: 10_000,
             num_cpus: 1,
             page_size: None,
@@ -211,7 +214,7 @@ enum MainThreadState<'tcx> {
 impl<'tcx> MainThreadState<'tcx> {
     fn on_main_stack_empty(
         &mut self,
-        this: &mut MiriInterpCx<'_, 'tcx>,
+        this: &mut MiriInterpCx<'tcx>,
     ) -> InterpResult<'tcx, Poll<()>> {
         use MainThreadState::*;
         match self {
@@ -260,12 +263,12 @@ impl<'tcx> MainThreadState<'tcx> {
 
 /// Returns a freshly created `InterpCx`.
 /// Public because this is also used by `priroda`.
-pub fn create_ecx<'mir, 'tcx: 'mir>(
+pub fn create_ecx<'tcx>(
     tcx: TyCtxt<'tcx>,
     entry_id: DefId,
     entry_type: EntryFnType,
     config: &MiriConfig,
-) -> InterpResult<'tcx, InterpCx<'mir, 'tcx, MiriMachine<'mir, 'tcx>>> {
+) -> InterpResult<'tcx, InterpCx<'tcx, MiriMachine<'tcx>>> {
     let param_env = ty::ParamEnv::reveal_all();
     let layout_cx = LayoutCx { tcx, param_env };
     let mut ecx =
@@ -383,10 +386,9 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
 
             let main_ptr = ecx.fn_ptr(FnVal::Instance(entry_instance));
 
-            // Inlining of `DEFAULT` from
-            // https://github.com/rust-lang/rust/blob/master/compiler/rustc_session/src/config/sigpipe.rs.
             // Always using DEFAULT is okay since we don't support signals in Miri anyway.
-            let sigpipe = 2;
+            // (This means we are effectively ignoring `-Zon-broken-pipe`.)
+            let sigpipe = rustc_session::config::sigpipe::DEFAULT;
 
             ecx.call_function(
                 start_instance,

@@ -5,19 +5,15 @@
 //
 // Fixes: rust-lang/rust#123234
 
-extern crate run_make_support;
-
-use run_make_support::{rustc, tmp_dir};
+use run_make_support::rustc;
 
 fn main() {
-    let inc_dir = tmp_dir();
-
     for _ in 0..=1 {
         rustc()
             .input("lib.rs")
             .crate_type("lib")
             .emit("asm,dep-info,link,mir,llvm-ir,llvm-bc")
-            .incremental(&inc_dir)
+            .incremental("incremental")
             .run();
     }
 }

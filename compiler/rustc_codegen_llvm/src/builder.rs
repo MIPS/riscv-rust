@@ -17,7 +17,7 @@ use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_hir::def_id::DefId;
 use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
 use rustc_middle::ty::layout::{
-    FnAbiError, FnAbiOfHelpers, FnAbiRequest, HasTyCtxt, LayoutError, LayoutOfHelpers, TyAndLayout,
+    FnAbiError, FnAbiOfHelpers, FnAbiRequest, LayoutError, LayoutOfHelpers, TyAndLayout,
 };
 use rustc_middle::ty::{self, Instance, Ty, TyCtxt};
 use rustc_sanitizers::{cfi, kcfi};
@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::iter;
 use std::ops::Deref;
 use std::ptr;
+use tracing::{debug, instrument};
 
 // All Builders must have an llfn associated with them
 #[must_use]
@@ -468,9 +469,10 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         val
     }
 
-    fn alloca(&mut self, ty: &'ll Type, align: Align) -> &'ll Value {
+    fn alloca(&mut self, size: Size, align: Align) -> &'ll Value {
         let mut bx = Builder::with_cx(self.cx);
         bx.position_at_start(unsafe { llvm::LLVMGetFirstBasicBlock(self.llfn()) });
+        let ty = self.cx().type_array(self.cx().type_i8(), size.bytes());
         unsafe {
             let alloca = llvm::LLVMBuildAlloca(bx.llbuilder, ty, UNNAMED);
             llvm::LLVMSetAlignment(alloca, align.bytes() as c_uint);
@@ -478,10 +480,10 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
-    fn byte_array_alloca(&mut self, len: &'ll Value, align: Align) -> &'ll Value {
+    fn dynamic_alloca(&mut self, size: &'ll Value, align: Align) -> &'ll Value {
         unsafe {
             let alloca =
-                llvm::LLVMBuildArrayAlloca(self.llbuilder, self.cx().type_i8(), len, UNNAMED);
+                llvm::LLVMBuildArrayAlloca(self.llbuilder, self.cx().type_i8(), size, UNNAMED);
             llvm::LLVMSetAlignment(alloca, align.bytes() as c_uint);
             alloca
         }
@@ -575,7 +577,7 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                         }
                     }
                 }
-                abi::F16 | abi::F32 | abi::F64 | abi::F128 => {}
+                abi::Float(_) => {}
             }
         }
 
@@ -975,6 +977,7 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         align: Align,
         flags: MemFlags,
     ) {
+        assert!(!flags.contains(MemFlags::NONTEMPORAL), "non-temporal memset not supported");
         let is_volatile = flags.contains(MemFlags::VOLATILE);
         unsafe {
             llvm::LLVMRustBuildMemSet(
@@ -1703,12 +1706,21 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
         kcfi_bundle
     }
 
+    /// Emits a call to `llvm.instrprof.mcdc.parameters`.
+    ///
+    /// This doesn't produce any code directly, but is used as input by
+    /// the LLVM pass that handles coverage instrumentation.
+    ///
+    /// (See clang's [`CodeGenPGO::emitMCDCParameters`] for comparison.)
+    ///
+    /// [`CodeGenPGO::emitMCDCParameters`]:
+    ///     https://github.com/rust-lang/llvm-project/blob/5399a24/clang/lib/CodeGen/CodeGenPGO.cpp#L1124
     pub(crate) fn mcdc_parameters(
         &mut self,
         fn_name: &'ll Value,
         hash: &'ll Value,
         bitmap_bytes: &'ll Value,
-    ) -> &'ll Value {
+    ) {
         debug!("mcdc_parameters() with args ({:?}, {:?}, {:?})", fn_name, hash, bitmap_bytes);
 
         assert!(llvm_util::get_version() >= (18, 0, 0), "MCDC intrinsics require LLVM 18 or later");
@@ -1731,17 +1743,6 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
                 [].as_ptr(),
                 0 as c_uint,
             );
-            // Create condition bitmap named `mcdc.addr`.
-            let mut bx = Builder::with_cx(self.cx);
-            bx.position_at_start(llvm::LLVMGetFirstBasicBlock(self.llfn()));
-            let cond_bitmap = {
-                let alloca =
-                    llvm::LLVMBuildAlloca(bx.llbuilder, bx.cx.type_i32(), c"mcdc.addr".as_ptr());
-                llvm::LLVMSetAlignment(alloca, 4);
-                alloca
-            };
-            bx.store(self.const_i32(0), cond_bitmap, self.tcx().data_layout.i32_align.abi);
-            cond_bitmap
         }
     }
 
@@ -1784,8 +1785,7 @@ impl<'a, 'll, 'tcx> Builder<'a, 'll, 'tcx> {
                 0 as c_uint,
             );
         }
-        let i32_align = self.tcx().data_layout.i32_align.abi;
-        self.store(self.const_i32(0), mcdc_temp, i32_align);
+        self.store(self.const_i32(0), mcdc_temp, self.tcx.data_layout.i32_align.abi);
     }
 
     pub(crate) fn mcdc_condbitmap_update(

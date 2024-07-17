@@ -2,6 +2,7 @@
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
 //@ ignore-fuchsia Needs directory creation privilege
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::env;
 use std::fs;

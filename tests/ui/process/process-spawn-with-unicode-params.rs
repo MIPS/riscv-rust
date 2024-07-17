@@ -10,6 +10,7 @@
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
 //@ ignore-fuchsia Filesystem manipulation privileged
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::io::prelude::*;
 use std::io;

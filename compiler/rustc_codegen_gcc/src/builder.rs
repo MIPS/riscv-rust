@@ -898,26 +898,20 @@ impl<'a, 'gcc, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'gcc, 'tcx> {
         self.gcc_checked_binop(oop, typ, lhs, rhs)
     }
 
-    fn alloca(&mut self, ty: Type<'gcc>, align: Align) -> RValue<'gcc> {
-        // FIXME(antoyo): this check that we don't call get_aligned() a second time on a type.
-        // Ideally, we shouldn't need to do this check.
-        let aligned_type = if ty == self.cx.u128_type || ty == self.cx.i128_type {
-            ty
-        } else {
-            ty.get_aligned(align.bytes())
-        };
+    fn alloca(&mut self, size: Size, align: Align) -> RValue<'gcc> {
+        let ty = self.cx.type_array(self.cx.type_i8(), size.bytes()).get_aligned(align.bytes());
         // TODO(antoyo): It might be better to return a LValue, but fixing the rustc API is non-trivial.
         self.stack_var_count.set(self.stack_var_count.get() + 1);
         self.current_func()
             .new_local(
                 self.location,
-                aligned_type,
+                ty,
                 &format!("stack_var_{}", self.stack_var_count.get()),
             )
             .get_address(self.location)
     }
 
-    fn byte_array_alloca(&mut self, _len: RValue<'gcc>, _align: Align) -> RValue<'gcc> {
+    fn dynamic_alloca(&mut self, _len: RValue<'gcc>, _align: Align) -> RValue<'gcc> {
         unimplemented!();
     }
 
@@ -1307,19 +1301,13 @@ impl<'a, 'gcc, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'gcc, 'tcx> {
     fn memmove(
         &mut self,
         dst: RValue<'gcc>,
-        dst_align: Align,
+        _dst_align: Align,
         src: RValue<'gcc>,
-        src_align: Align,
+        _src_align: Align,
         size: RValue<'gcc>,
         flags: MemFlags,
     ) {
-        if flags.contains(MemFlags::NONTEMPORAL) {
-            // HACK(nox): This is inefficient but there is no nontemporal memmove.
-            let val = self.load(src.get_type().get_pointee().expect("get_pointee"), src, src_align);
-            let ptr = self.pointercast(dst, self.type_ptr_to(self.val_ty(val)));
-            self.store_with_flags(val, ptr, dst_align, flags);
-            return;
-        }
+        assert!(!flags.contains(MemFlags::NONTEMPORAL), "non-temporal memmove not supported");
         let size = self.intcast(size, self.type_size_t(), false);
         let _is_volatile = flags.contains(MemFlags::VOLATILE);
         let dst = self.pointercast(dst, self.type_i8p());
@@ -1341,6 +1329,7 @@ impl<'a, 'gcc, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'gcc, 'tcx> {
         _align: Align,
         flags: MemFlags,
     ) {
+        assert!(!flags.contains(MemFlags::NONTEMPORAL), "non-temporal memset not supported");
         let _is_volatile = flags.contains(MemFlags::VOLATILE);
         let ptr = self.pointercast(ptr, self.type_i8p());
         let memset = self.context.get_builtin_function("memset");

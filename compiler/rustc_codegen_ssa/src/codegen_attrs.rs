@@ -15,11 +15,7 @@ use rustc_span::{sym, Span};
 use rustc_target::spec::{abi, SanitizerSet};
 
 use crate::errors;
-use crate::target_features::from_target_feature;
-use crate::{
-    errors::{ExpectedCoverageSymbol, ExpectedUsedSymbol},
-    target_features::check_target_feature_trait_unsafe,
-};
+use crate::target_features::{check_target_feature_trait_unsafe, from_target_feature};
 
 fn linkage_by_name(tcx: TyCtxt<'_>, def_id: LocalDefId, name: &str) -> Linkage {
     use rustc_middle::mir::mono::Linkage::*;
@@ -139,7 +135,8 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
                         // coverage on a smaller scope within an excluded larger scope.
                     }
                     Some(_) | None => {
-                        tcx.dcx().emit_err(ExpectedCoverageSymbol { span: attr.span });
+                        tcx.dcx()
+                            .span_delayed_bug(attr.span, "unexpected value of coverage attribute");
                     }
                 }
             }
@@ -174,7 +171,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
                         codegen_fn_attrs.flags |= CodegenFnAttrFlags::USED;
                     }
                     Some(_) => {
-                        tcx.dcx().emit_err(ExpectedUsedSymbol { span: attr.span });
+                        tcx.dcx().emit_err(errors::ExpectedUsedSymbol { span: attr.span });
                     }
                     None => {
                         // Unfortunately, unconditionally using `llvm.used` causes
@@ -276,7 +273,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
             sym::target_feature => {
                 if !tcx.is_closure_like(did.to_def_id())
                     && let Some(fn_sig) = fn_sig()
-                    && fn_sig.skip_binder().unsafety() == hir::Unsafety::Normal
+                    && fn_sig.skip_binder().safety() == hir::Safety::Safe
                 {
                     if tcx.sess.target.is_like_wasm || tcx.sess.opts.actually_rustdoc {
                         // The `#[target_feature]` attribute is allowed on
@@ -324,6 +321,19 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
                     let linkage = Some(linkage_by_name(tcx, did, val.as_str()));
                     if tcx.is_foreign_item(did) {
                         codegen_fn_attrs.import_linkage = linkage;
+
+                        if tcx.is_mutable_static(did.into()) {
+                            let mut diag = tcx.dcx().struct_span_err(
+                                attr.span,
+                                "extern mutable statics are not allowed with `#[linkage]`",
+                            );
+                            diag.note(
+                                "marking the extern static mutable would allow changing which symbol \
+                                 the static references rather than make the target of the symbol \
+                                 mutable",
+                            );
+                            diag.emit();
+                        }
                     } else {
                         codegen_fn_attrs.linkage = linkage;
                     }
@@ -435,7 +445,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
             sym::repr => {
                 codegen_fn_attrs.alignment = if let Some(items) = attr.meta_item_list()
                     && let [item] = items.as_slice()
-                    && let Some((sym::align, literal)) = item.name_value_literal()
+                    && let Some((sym::align, literal)) = item.singleton_lit_list()
                 {
                     rustc_attr::parse_alignment(&literal.kind)
                         .map_err(|msg| {
@@ -564,8 +574,8 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, did: LocalDefId) -> CodegenFnAttrs {
                     lint::builtin::INLINE_NO_SANITIZE,
                     hir_id,
                     no_sanitize_span,
-                    "`no_sanitize` will have no effect after inlining",
                     |lint| {
+                        lint.primary_message("`no_sanitize` will have no effect after inlining");
                         lint.span_note(inline_span, "inlining requested here");
                     },
                 )

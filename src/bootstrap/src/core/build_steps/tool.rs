@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::core::build_steps::compile;
@@ -9,7 +9,7 @@ use crate::core::builder;
 use crate::core::builder::{Builder, Cargo as CargoCommand, RunConfig, ShouldRun, Step};
 use crate::core::config::TargetSelection;
 use crate::utils::channel::GitInfo;
-use crate::utils::exec::BootstrapCommand;
+use crate::utils::helpers::output;
 use crate::utils::helpers::{add_dylib_path, exe, t};
 use crate::Compiler;
 use crate::Mode;
@@ -32,6 +32,8 @@ struct ToolBuild {
     extra_features: Vec<String>,
     /// Nightly-only features that are allowed (comma-separated list).
     allow_features: &'static str,
+    /// Additional arguments to pass to the `cargo` invocation.
+    cargo_args: Vec<String>,
 }
 
 impl Builder<'_> {
@@ -100,6 +102,7 @@ impl Step for ToolBuild {
         if !self.allow_features.is_empty() {
             cargo.allow_features(self.allow_features);
         }
+        cargo.args(self.cargo_args);
         let _guard = builder.msg_tool(
             Kind::Build,
             self.mode,
@@ -109,9 +112,8 @@ impl Step for ToolBuild {
             &self.target,
         );
 
-        let mut cargo = Command::from(cargo);
         // we check this below
-        let build_success = builder.run_cmd(BootstrapCommand::from(&mut cargo).allow_failure());
+        let build_success = compile::stream_cargo(builder, cargo, vec![], &mut |_| {});
 
         builder.save_toolstate(
             tool,
@@ -127,10 +129,7 @@ impl Step for ToolBuild {
             if tool == "tidy" {
                 tool = "rust-tidy";
             }
-            let cargo_out = builder.cargo_out(compiler, self.mode, target).join(exe(tool, target));
-            let bin = builder.tools_dir(compiler).join(exe(tool, target));
-            builder.copy_link(&cargo_out, &bin);
-            bin
+            copy_link_tool_bin(builder, self.compiler, self.target, self.mode, tool)
         }
     }
 }
@@ -200,7 +199,7 @@ pub fn prepare_tool_cargo(
         cargo.env("CFG_COMMIT_DATE", date);
     }
     if !features.is_empty() {
-        cargo.arg("--features").arg(&features.join(", "));
+        cargo.arg("--features").arg(features.join(", "));
     }
 
     // Enable internal lints for clippy and rustdoc
@@ -212,7 +211,29 @@ pub fn prepare_tool_cargo(
     // See https://github.com/rust-lang/rust/issues/116538
     cargo.rustflag("-Zunstable-options");
 
+    // `-Zon-broken-pipe=kill` breaks cargo tests
+    if !path.ends_with("cargo") {
+        // If the output is piped to e.g. `head -n1` we want the process to be killed,
+        // rather than having an error bubble up and cause a panic.
+        cargo.rustflag("-Zon-broken-pipe=kill");
+    }
+
     cargo
+}
+
+/// Links a built tool binary with the given `name` from the build directory to the
+/// tools directory.
+fn copy_link_tool_bin(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: TargetSelection,
+    mode: Mode,
+    name: &str,
+) -> PathBuf {
+    let cargo_out = builder.cargo_out(compiler, mode, target).join(exe(name, target));
+    let bin = builder.tools_dir(compiler).join(exe(name, target));
+    builder.copy_link(&cargo_out, &bin);
+    bin
 }
 
 macro_rules! bootstrap_tool {
@@ -284,6 +305,7 @@ macro_rules! bootstrap_tool {
                     },
                     extra_features: vec![],
                     allow_features: concat!($($allow_features)*),
+                    cargo_args: vec![]
                 })
             }
         }
@@ -302,7 +324,6 @@ bootstrap_tool!(
     RemoteTestClient, "src/tools/remote-test-client", "remote-test-client";
     RustInstaller, "src/tools/rust-installer", "rust-installer";
     RustdocTheme, "src/tools/rustdoc-themes", "rustdoc-themes";
-    ExpandYamlAnchors, "src/tools/expand-yaml-anchors", "expand-yaml-anchors";
     LintDocs, "src/tools/lint-docs", "lint-docs";
     JsonDocCk, "src/tools/jsondocck", "jsondocck";
     JsonDocLint, "src/tools/jsondoclint", "jsondoclint";
@@ -314,9 +335,96 @@ bootstrap_tool!(
     SuggestTests, "src/tools/suggest-tests", "suggest-tests";
     GenerateWindowsSys, "src/tools/generate-windows-sys", "generate-windows-sys";
     RustdocGUITest, "src/tools/rustdoc-gui-test", "rustdoc-gui-test", is_unstable_tool = true, allow_features = "test";
-    OptimizedDist, "src/tools/opt-dist", "opt-dist";
     CoverageDump, "src/tools/coverage-dump", "coverage-dump";
 );
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct OptimizedDist {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for OptimizedDist {
+    type Output = PathBuf;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/opt-dist")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(OptimizedDist {
+            compiler: run.builder.compiler(0, run.builder.config.build),
+            target: run.target,
+        });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> PathBuf {
+        // We need to ensure the rustc-perf submodule is initialized when building opt-dist since
+        // the tool requires it to be in place to run.
+        builder.update_submodule(Path::new("src/tools/rustc-perf"));
+
+        builder.ensure(ToolBuild {
+            compiler: self.compiler,
+            target: self.target,
+            tool: "opt-dist",
+            mode: Mode::ToolBootstrap,
+            path: "src/tools/opt-dist",
+            source_type: SourceType::InTree,
+            extra_features: Vec::new(),
+            allow_features: "",
+            cargo_args: Vec::new(),
+        })
+    }
+}
+
+/// The [rustc-perf](https://github.com/rust-lang/rustc-perf) benchmark suite, which is added
+/// as a submodule at `src/tools/rustc-perf`.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct RustcPerf {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for RustcPerf {
+    /// Path to the built `collector` binary.
+    type Output = PathBuf;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/rustc-perf")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(RustcPerf {
+            compiler: run.builder.compiler(0, run.builder.config.build),
+            target: run.target,
+        });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> PathBuf {
+        // We need to ensure the rustc-perf submodule is initialized.
+        builder.update_submodule(Path::new("src/tools/rustc-perf"));
+
+        let tool = ToolBuild {
+            compiler: self.compiler,
+            target: self.target,
+            tool: "collector",
+            mode: Mode::ToolBootstrap,
+            path: "src/tools/rustc-perf",
+            source_type: SourceType::Submodule,
+            extra_features: Vec::new(),
+            allow_features: "",
+            // Only build the collector package, which is used for benchmarking through
+            // a CLI.
+            cargo_args: vec!["-p".to_string(), "collector".to_string()],
+        };
+        let collector_bin = builder.ensure(tool.clone());
+        // We also need to symlink the `rustc-fake` binary to the corresponding directory,
+        // because `collector` expects it in the same directory.
+        copy_link_tool_bin(builder, tool.compiler, tool.target, tool.mode, "rustc-fake");
+
+        collector_bin
+    }
+}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
 pub struct ErrorIndex {
@@ -368,6 +476,7 @@ impl Step for ErrorIndex {
             source_type: SourceType::InTree,
             extra_features: Vec::new(),
             allow_features: "",
+            cargo_args: Vec::new(),
         })
     }
 }
@@ -402,6 +511,7 @@ impl Step for RemoteTestServer {
             source_type: SourceType::InTree,
             extra_features: Vec::new(),
             allow_features: "",
+            cargo_args: Vec::new(),
         })
     }
 }
@@ -472,6 +582,7 @@ impl Step for Rustdoc {
             features.push("jemalloc".to_string());
         }
 
+        // NOTE: Never modify the rustflags here, it breaks the build cache for other tools!
         let cargo = prepare_tool_cargo(
             builder,
             build_compiler,
@@ -555,6 +666,7 @@ impl Step for Cargo {
             source_type: SourceType::Submodule,
             extra_features: Vec::new(),
             allow_features: "",
+            cargo_args: Vec::new(),
         })
     }
 }
@@ -582,6 +694,7 @@ impl Step for LldWrapper {
             source_type: SourceType::InTree,
             extra_features: Vec::new(),
             allow_features: "",
+            cargo_args: Vec::new(),
         })
     }
 }
@@ -630,6 +743,7 @@ impl Step for RustAnalyzer {
             extra_features: vec!["in-rust-tree".to_owned()],
             source_type: SourceType::InTree,
             allow_features: RustAnalyzer::ALLOW_FEATURES,
+            cargo_args: Vec::new(),
         })
     }
 }
@@ -677,6 +791,7 @@ impl Step for RustAnalyzerProcMacroSrv {
             extra_features: vec!["in-rust-tree".to_owned()],
             source_type: SourceType::InTree,
             allow_features: RustAnalyzer::ALLOW_FEATURES,
+            cargo_args: Vec::new(),
         });
 
         // Copy `rust-analyzer-proc-macro-srv` to `<sysroot>/libexec/`
@@ -760,6 +875,69 @@ impl Step for LlvmBitcodeLinker {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct LibcxxVersionTool {
+    pub target: TargetSelection,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum LibcxxVersion {
+    Gnu(usize),
+    Llvm(usize),
+}
+
+impl Step for LibcxxVersionTool {
+    type Output = LibcxxVersion;
+    const DEFAULT: bool = false;
+    const ONLY_HOSTS: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.never()
+    }
+
+    fn run(self, builder: &Builder<'_>) -> LibcxxVersion {
+        let out_dir = builder.out.join(self.target.to_string()).join("libcxx-version");
+        let executable = out_dir.join(exe("libcxx-version", self.target));
+
+        // This is a sanity-check specific step, which means it is frequently called (when using
+        // CI LLVM), and compiling `src/tools/libcxx-version/main.cpp` at the beginning of the bootstrap
+        // invocation adds a fair amount of overhead to the process (see https://github.com/rust-lang/rust/issues/126423).
+        // Therefore, we want to avoid recompiling this file unnecessarily.
+        if !executable.exists() {
+            if !out_dir.exists() {
+                t!(fs::create_dir_all(&out_dir));
+            }
+
+            let compiler = builder.cxx(self.target).unwrap();
+            let mut cmd = Command::new(compiler);
+
+            cmd.arg("-o")
+                .arg(&executable)
+                .arg(builder.src.join("src/tools/libcxx-version/main.cpp"));
+
+            builder.run_cmd(&mut cmd);
+
+            if !executable.exists() {
+                panic!("Something went wrong. {} is not present", executable.display());
+            }
+        }
+
+        let version_output = output(&mut Command::new(executable));
+
+        let version_str = version_output.split_once("version:").unwrap().1;
+        let version = version_str.trim().parse::<usize>().unwrap();
+
+        if version_output.starts_with("libstdc++") {
+            LibcxxVersion::Gnu(version)
+        } else if version_output.starts_with("libc++") {
+            LibcxxVersion::Llvm(version)
+        } else {
+            panic!("Coudln't recognize the standard library version.");
+        }
+    }
+}
+
 macro_rules! tool_extended {
     (($sel:ident, $builder:ident),
        $($name:ident,
@@ -820,6 +998,7 @@ macro_rules! tool_extended {
                     extra_features: $sel.extra_features,
                     source_type: SourceType::InTree,
                     allow_features: concat!($($allow_features)*),
+                    cargo_args: vec![]
                 });
 
                 if (false $(|| !$add_bins_to_sysroot.is_empty())?) && $sel.compiler.stage > 0 {
@@ -861,7 +1040,6 @@ tool_extended!((self, builder),
     // But `builder.cargo` doesn't know how to handle ToolBootstrap in stages other than 0,
     // and this is close enough for now.
     Rls, "src/tools/rls", "rls", stable=true, tool_std=true;
-    RustDemangler, "src/tools/rust-demangler", "rust-demangler", stable=false, tool_std=true;
     Rustfmt, "src/tools/rustfmt", "rustfmt", stable=true, add_bins_to_sysroot = ["rustfmt", "cargo-fmt"];
 );
 

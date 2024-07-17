@@ -1,6 +1,7 @@
 //@ run-pass
 //@ ignore-wasm32 no processes
 //@ ignore-sgx no processes
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 use std::alloc::{Layout, handle_alloc_error};
 use std::env;

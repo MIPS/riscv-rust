@@ -184,7 +184,7 @@
 //! requires at least a level of pointer indirection each time a new object is added to the mix
 //! (and, practically, a heap allocation).
 //!
-//! Although there were other reason as well, this issue of expensive composition is the key thing
+//! Although there were other reasons as well, this issue of expensive composition is the key thing
 //! that drove Rust towards adopting a different model. It is particularly a problem
 //! when one considers, for example, the implications of composing together the [`Future`]s which
 //! will eventually make up an asynchronous task (including address-sensitive `async fn` state
@@ -923,7 +923,7 @@
 use crate::cmp;
 use crate::fmt;
 use crate::hash::{Hash, Hasher};
-use crate::ops::{CoerceUnsized, Deref, DerefMut, DispatchFromDyn, Receiver};
+use crate::ops::{CoerceUnsized, Deref, DerefMut, DerefPure, DispatchFromDyn, Receiver};
 
 #[allow(unused_imports)]
 use crate::{
@@ -1684,6 +1684,9 @@ impl<Ptr: DerefMut<Target: Unpin>> DerefMut for Pin<Ptr> {
     }
 }
 
+#[unstable(feature = "deref_pure_trait", issue = "87121")]
+unsafe impl<Ptr: DerefPure> DerefPure for Pin<Ptr> {}
+
 #[unstable(feature = "receiver_trait", issue = "none")]
 impl<Ptr: Receiver> Receiver for Pin<Ptr> {}
 
@@ -1809,7 +1812,7 @@ impl<Ptr, U> DispatchFromDyn<Pin<U>> for Pin<Ptr> where Ptr: DispatchFromDyn<U> 
 /// fn coroutine_fn() -> impl Coroutine<Yield = usize, Return = ()> /* not Unpin */ {
 ///  // Allow coroutine to be self-referential (not `Unpin`)
 ///  // vvvvvv        so that locals can cross yield points.
-///     static || {
+///     #[coroutine] static || {
 ///         let foo = String::from("foo");
 ///         let foo_ref = &foo; // ------+
 ///         yield 0;                  // | <- crosses yield point!

@@ -10,11 +10,12 @@ use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind};
 use rustc_hir::Node;
 use rustc_infer::infer::{RegionVariableOrigin, TyCtxtInferExt};
-use rustc_infer::traits::{Obligation, TraitEngineExt as _};
+use rustc_infer::traits::Obligation;
 use rustc_lint_defs::builtin::REPR_TRANSPARENT_EXTERNAL_PRIVATE_FIELDS;
 use rustc_middle::middle::resolve_bound_vars::ResolvedArg;
 use rustc_middle::middle::stability::EvalResult;
-use rustc_middle::traits::ObligationCauseCode;
+use rustc_middle::span_bug;
+use rustc_middle::ty::error::TypeErrorToStringExt;
 use rustc_middle::ty::fold::BottomUpFolder;
 use rustc_middle::ty::layout::{LayoutError, MAX_SIMD_LANES};
 use rustc_middle::ty::util::{Discr, InspectCoroutineFields, IntTypeExt};
@@ -24,10 +25,10 @@ use rustc_middle::ty::{
 };
 use rustc_session::lint::builtin::{UNINHABITED_STATIC, UNSUPPORTED_CALLING_CONVENTIONS};
 use rustc_target::abi::FieldIdx;
+use rustc_trait_selection::traits;
 use rustc_trait_selection::traits::error_reporting::on_unimplemented::OnUnimplementedDirective;
 use rustc_trait_selection::traits::error_reporting::TypeErrCtxtExt as _;
 use rustc_trait_selection::traits::outlives_bounds::InferCtxtExt as _;
-use rustc_trait_selection::traits::{self, TraitEngine, TraitEngineExt as _};
 use rustc_type_ir::fold::TypeFoldable;
 
 use std::cell::LazyCell;
@@ -46,13 +47,9 @@ pub fn check_abi(tcx: TyCtxt<'_>, hir_id: hir::HirId, span: Span, abi: Abi) {
             .emit();
         }
         None => {
-            tcx.node_span_lint(
-                UNSUPPORTED_CALLING_CONVENTIONS,
-                hir_id,
-                span,
-                "use of calling convention not supported on this target",
-                |_| {},
-            );
+            tcx.node_span_lint(UNSUPPORTED_CALLING_CONVENTIONS, hir_id, span, |lint| {
+                lint.primary_message("use of calling convention not supported on this target");
+            });
         }
     }
 
@@ -243,8 +240,8 @@ fn check_static_inhabited(tcx: TyCtxt<'_>, def_id: LocalDefId) {
             UNINHABITED_STATIC,
             tcx.local_def_id_to_hir_id(def_id),
             span,
-            "static of uninhabited type",
             |lint| {
+                lint.primary_message("static of uninhabited type");
                 lint
                 .note("uninhabited statics cannot be initialized, and any access would be an immediate error");
             },
@@ -346,7 +343,7 @@ fn check_opaque_meets_bounds<'tcx>(
     let param_env = tcx.param_env(defining_use_anchor);
 
     let infcx = tcx.infer_ctxt().with_opaque_type_inference(defining_use_anchor).build();
-    let ocx = ObligationCtxt::new(&infcx);
+    let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
 
     let args = match *origin {
         hir::OpaqueTyOrigin::FnReturn(parent)
@@ -484,9 +481,12 @@ fn sanity_check_found_hidden_type<'tcx>(
 /// 2. Checking that all lifetimes that are implicitly captured are mentioned.
 /// 3. Asserting that all parameters mentioned in the captures list are invariant.
 fn check_opaque_precise_captures<'tcx>(tcx: TyCtxt<'tcx>, opaque_def_id: LocalDefId) {
-    let hir::OpaqueTy { precise_capturing_args, .. } =
+    let hir::OpaqueTy { bounds, .. } =
         *tcx.hir_node_by_def_id(opaque_def_id).expect_item().expect_opaque_ty();
-    let Some(precise_capturing_args) = precise_capturing_args else {
+    let Some(precise_capturing_args) = bounds.iter().find_map(|bound| match *bound {
+        hir::GenericBound::Use(bounds, ..) => Some(bounds),
+        _ => None,
+    }) else {
         // No precise capturing args; nothing to validate
         return;
     };
@@ -538,11 +538,9 @@ fn check_opaque_precise_captures<'tcx>(tcx: TyCtxt<'tcx>, opaque_def_id: LocalDe
                 // the cases that were stabilized with the `impl_trait_projection`
                 // feature -- see <https://github.com/rust-lang/rust/pull/115659>.
                 if let DefKind::LifetimeParam = tcx.def_kind(def_id)
-                    && let ty::ReEarlyParam(ty::EarlyParamRegion { def_id, .. })
-                    | ty::ReLateParam(ty::LateParamRegion {
-                        bound_region: ty::BoundRegionKind::BrNamed(def_id, _),
-                        ..
-                    }) = *tcx.map_opaque_lifetime_to_parent_lifetime(def_id.expect_local())
+                    && let Some(def_id) = tcx
+                        .map_opaque_lifetime_to_parent_lifetime(def_id.expect_local())
+                        .opt_param_def_id(tcx, tcx.parent(opaque_def_id.to_def_id()))
                 {
                     shadowed_captures.insert(def_id);
                 }
@@ -562,7 +560,7 @@ fn check_opaque_precise_captures<'tcx>(tcx: TyCtxt<'tcx>, opaque_def_id: LocalDe
         let generics = tcx.generics_of(generics);
         def_id = generics.parent;
 
-        for param in &generics.params {
+        for param in &generics.own_params {
             if expected_captures.contains(&param.def_id) {
                 assert_eq!(
                     variances[param.index as usize],
@@ -585,12 +583,9 @@ fn check_opaque_precise_captures<'tcx>(tcx: TyCtxt<'tcx>, opaque_def_id: LocalDe
                     // Check if the lifetime param was captured but isn't named in the precise captures list.
                     if variances[param.index as usize] == ty::Invariant {
                         if let DefKind::OpaqueTy = tcx.def_kind(tcx.parent(param.def_id))
-                            && let ty::ReEarlyParam(ty::EarlyParamRegion { def_id, .. })
-                            | ty::ReLateParam(ty::LateParamRegion {
-                                bound_region: ty::BoundRegionKind::BrNamed(def_id, _),
-                                ..
-                            }) = *tcx
+                            && let Some(def_id) = tcx
                                 .map_opaque_lifetime_to_parent_lifetime(param.def_id.expect_local())
+                                .opt_param_def_id(tcx, tcx.parent(opaque_def_id.to_def_id()))
                         {
                             tcx.dcx().emit_err(errors::LifetimeNotCaptured {
                                 opaque_span,
@@ -724,7 +719,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) {
                             tcx,
                             assoc_item,
                             assoc_item,
-                            ty::TraitRef::new(tcx, def_id.to_def_id(), trait_args),
+                            ty::TraitRef::new_from_args(tcx, def_id.to_def_id(), trait_args),
                         );
                     }
                     _ => {}
@@ -779,7 +774,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) {
                         let def_id = item.id.owner_id.def_id;
                         let generics = tcx.generics_of(def_id);
                         let own_counts = generics.own_counts();
-                        if generics.params.len() - own_counts.lifetimes != 0 {
+                        if generics.own_params.len() - own_counts.lifetimes != 0 {
                             let (kinds, kinds_pl, egs) = match (own_counts.types, own_counts.consts)
                             {
                                 (_, 0) => ("type", "types", Some("u32")),
@@ -810,7 +805,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) {
 
                         let item = tcx.hir().foreign_item(item.id);
                         match &item.kind {
-                            hir::ForeignItemKind::Fn(fn_decl, _, _) => {
+                            hir::ForeignItemKind::Fn(fn_decl, _, _, _) => {
                                 require_c_abi_if_c_variadic(tcx, fn_decl, abi, item.span);
                             }
                             hir::ForeignItemKind::Static(..) => {
@@ -1315,9 +1310,11 @@ pub(super) fn check_transparent<'tcx>(tcx: TyCtxt<'tcx>, adt: ty::AdtDef<'tcx>) 
                     REPR_TRANSPARENT_EXTERNAL_PRIVATE_FIELDS,
                     tcx.local_def_id_to_hir_id(adt.did().expect_local()),
                     span,
-                    "zero-sized fields in `repr(transparent)` cannot \
-                    contain external non-exhaustive types",
                     |lint| {
+                        lint.primary_message(
+                            "zero-sized fields in `repr(transparent)` cannot \
+                             contain external non-exhaustive types",
+                        );
                         let note = if non_exhaustive {
                             "is marked with `#[non_exhaustive]`"
                         } else {
@@ -1545,7 +1542,7 @@ fn check_type_alias_type_params_are_used<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalD
             .collect::<FxIndexMap<_, _>>()
     });
 
-    let mut params_used = BitSet::new_empty(generics.params.len());
+    let mut params_used = BitSet::new_empty(generics.own_params.len());
     for leaf in ty.walk() {
         if let GenericArgKind::Type(leaf_ty) = leaf.unpack()
             && let ty::Param(param) = leaf_ty.kind()
@@ -1555,7 +1552,7 @@ fn check_type_alias_type_params_are_used<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalD
         }
     }
 
-    for param in &generics.params {
+    for param in &generics.own_params {
         if !params_used.contains(param.index)
             && let ty::GenericParamDefKind::Type { .. } = param.kind
         {
@@ -1715,55 +1712,31 @@ fn opaque_type_cycle_error(
     err.emit()
 }
 
-// FIXME(@lcnr): This should not be computed per coroutine, but instead once for
-// each typeck root.
 pub(super) fn check_coroutine_obligations(
     tcx: TyCtxt<'_>,
     def_id: LocalDefId,
 ) -> Result<(), ErrorGuaranteed> {
-    debug_assert!(tcx.is_coroutine(def_id.to_def_id()));
+    debug_assert!(!tcx.is_typeck_child(def_id.to_def_id()));
 
-    let typeck = tcx.typeck(def_id);
-    let param_env = tcx.param_env(typeck.hir_owner.def_id);
+    let typeck_results = tcx.typeck(def_id);
+    let param_env = tcx.param_env(def_id);
 
-    let coroutine_interior_predicates = &typeck.coroutine_interior_predicates[&def_id];
-    debug!(?coroutine_interior_predicates);
+    debug!(?typeck_results.coroutine_stalled_predicates);
 
     let infcx = tcx
         .infer_ctxt()
         // typeck writeback gives us predicates with their regions erased.
         // As borrowck already has checked lifetimes, we do not need to do it again.
         .ignoring_regions()
-        // Bind opaque types to type checking root, as they should have been checked by borrowck,
-        // but may show up in some cases, like when (root) obligations are stalled in the new solver.
-        .with_opaque_type_inference(typeck.hir_owner.def_id)
+        .with_opaque_type_inference(def_id)
         .build();
 
-    let mut fulfillment_cx = <dyn TraitEngine<'_>>::new(&infcx);
-    for (predicate, cause) in coroutine_interior_predicates {
-        let obligation = Obligation::new(tcx, cause.clone(), param_env, *predicate);
-        fulfillment_cx.register_predicate_obligation(&infcx, obligation);
+    let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
+    for (predicate, cause) in &typeck_results.coroutine_stalled_predicates {
+        ocx.register_obligation(Obligation::new(tcx, cause.clone(), param_env, *predicate));
     }
 
-    if (tcx.features().unsized_locals || tcx.features().unsized_fn_params)
-        && let Some(coroutine) = tcx.mir_coroutine_witnesses(def_id)
-    {
-        for field_ty in coroutine.field_tys.iter() {
-            fulfillment_cx.register_bound(
-                &infcx,
-                param_env,
-                field_ty.ty,
-                tcx.require_lang_item(hir::LangItem::Sized, Some(field_ty.source_info.span)),
-                ObligationCause::new(
-                    field_ty.source_info.span,
-                    def_id,
-                    ObligationCauseCode::SizedCoroutineInterior(def_id),
-                ),
-            );
-        }
-    }
-
-    let errors = fulfillment_cx.select_all_or_error(&infcx);
+    let errors = ocx.select_all_or_error();
     debug!(?errors);
     if !errors.is_empty() {
         return Err(infcx.err_ctxt().report_fulfillment_errors(errors));

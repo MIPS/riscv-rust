@@ -9,6 +9,7 @@ use rustc_hir as hir;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::HirId;
 use rustc_infer::infer::error_reporting::TypeAnnotationNeeded::E0282;
+use rustc_middle::span_bug;
 use rustc_middle::traits::ObligationCause;
 use rustc_middle::ty::adjustment::{Adjust, Adjustment, PointerCoercion};
 use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
@@ -346,6 +347,7 @@ impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
             _ => {}
         };
 
+        self.visit_rust_2024_migration_desugared_pats(p.hir_id);
         self.visit_skipped_ref_pats(p.hir_id);
         self.visit_pat_adjustments(p.span, p.hir_id);
 
@@ -551,15 +553,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
     fn visit_coroutine_interior(&mut self) {
         let fcx_typeck_results = self.fcx.typeck_results.borrow();
         assert_eq!(fcx_typeck_results.hir_owner, self.typeck_results.hir_owner);
-        self.tcx().with_stable_hashing_context(move |ref hcx| {
-            for (&expr_def_id, predicates) in
-                fcx_typeck_results.coroutine_interior_predicates.to_sorted(hcx, false).into_iter()
-            {
-                let predicates =
-                    self.resolve(predicates.clone(), &self.fcx.tcx.def_span(expr_def_id));
-                self.typeck_results.coroutine_interior_predicates.insert(expr_def_id, predicates);
-            }
-        })
+        for (predicate, cause) in &fcx_typeck_results.coroutine_stalled_predicates {
+            let (predicate, cause) = self.resolve((*predicate, cause.clone()), &cause.span);
+            self.typeck_results.coroutine_stalled_predicates.insert((predicate, cause));
+        }
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -657,6 +654,22 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 debug!(?resolved_adjustment);
                 self.typeck_results.adjustments_mut().insert(hir_id, resolved_adjustment);
             }
+        }
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    fn visit_rust_2024_migration_desugared_pats(&mut self, hir_id: hir::HirId) {
+        if self
+            .fcx
+            .typeck_results
+            .borrow_mut()
+            .rust_2024_migration_desugared_pats_mut()
+            .remove(hir_id)
+        {
+            debug!(
+                "node is a pat whose match ergonomics are desugared by the Rust 2024 migration lint"
+            );
+            self.typeck_results.rust_2024_migration_desugared_pats_mut().insert(hir_id);
         }
     }
 
@@ -780,7 +793,7 @@ impl<'cx, 'tcx> Resolver<'cx, 'tcx> {
     }
 
     fn report_error(&self, p: impl Into<ty::GenericArg<'tcx>>) -> ErrorGuaranteed {
-        if let Some(guar) = self.fcx.dcx().has_errors() {
+        if let Some(guar) = self.fcx.tainted_by_errors() {
             guar
         } else {
             self.fcx
@@ -834,7 +847,7 @@ impl<'cx, 'tcx> Resolver<'cx, 'tcx> {
 }
 
 impl<'cx, 'tcx> TypeFolder<TyCtxt<'tcx>> for Resolver<'cx, 'tcx> {
-    fn interner(&self) -> TyCtxt<'tcx> {
+    fn cx(&self) -> TyCtxt<'tcx> {
         self.fcx.tcx
     }
 
@@ -849,8 +862,9 @@ impl<'cx, 'tcx> TypeFolder<TyCtxt<'tcx>> for Resolver<'cx, 'tcx> {
 
     fn fold_const(&mut self, ct: ty::Const<'tcx>) -> ty::Const<'tcx> {
         self.handle_term(ct, ty::Const::outer_exclusive_binder, |tcx, guar| {
-            ty::Const::new_error(tcx, guar, ct.ty())
+            ty::Const::new_error(tcx, guar)
         })
+        .super_fold_with(self)
     }
 
     fn fold_predicate(&mut self, predicate: ty::Predicate<'tcx>) -> ty::Predicate<'tcx> {

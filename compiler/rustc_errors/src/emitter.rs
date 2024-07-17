@@ -35,6 +35,7 @@ use std::iter;
 use std::path::Path;
 use termcolor::{Buffer, BufferWriter, ColorChoice, ColorSpec, StandardStream};
 use termcolor::{Color, WriteColor};
+use tracing::{debug, instrument, trace, warn};
 
 /// Default column width, used in tests and when terminal dimensions cannot be determined.
 const DEFAULT_COLUMN_WIDTH: usize = 140;
@@ -566,7 +567,7 @@ impl Emitter for SilentEmitter {
             if let Some(fatal_note) = &self.fatal_note {
                 diag.sub(Level::Note, fatal_note.clone(), MultiSpan::new());
             }
-            self.fatal_dcx.emit_diagnostic(diag);
+            self.fatal_dcx.handle().emit_diagnostic(diag);
         }
     }
 }
@@ -901,7 +902,7 @@ impl HumanEmitter {
         //      <EMPTY LINE>
         //
         let mut annotations_position = vec![];
-        let mut line_len = 0;
+        let mut line_len: usize = 0;
         let mut p = 0;
         for (i, annotation) in annotations.iter().enumerate() {
             for (j, next) in annotations.iter().enumerate() {
@@ -972,6 +973,31 @@ impl HumanEmitter {
             return vec![];
         }
 
+        if annotations_position
+            .iter()
+            .all(|(_, ann)| matches!(ann.annotation_type, AnnotationType::MultilineStart(_)))
+            && let Some(max_pos) = annotations_position.iter().map(|(pos, _)| *pos).max()
+        {
+            // Special case the following, so that we minimize overlapping multiline spans.
+            //
+            // 3 │       X0 Y0 Z0
+            //   │ ┏━━━━━┛  │  │     < We are writing these lines
+            //   │ ┃┌───────┘  │     < by reverting the "depth" of
+            //   │ ┃│┌─────────┘     < their multilne spans.
+            // 4 │ ┃││   X1 Y1 Z1
+            // 5 │ ┃││   X2 Y2 Z2
+            //   │ ┃│└────╿──│──┘ `Z` label
+            //   │ ┃└─────│──┤
+            //   │ ┗━━━━━━┥  `Y` is a good letter too
+            //   ╰╴       `X` is a good letter
+            for (pos, _) in &mut annotations_position {
+                *pos = max_pos - *pos;
+            }
+            // We know then that we don't need an additional line for the span label, saving us
+            // one line of vertical space.
+            line_len = line_len.saturating_sub(1);
+        }
+
         // Write the column separator.
         //
         // After this we will have:
@@ -984,7 +1010,7 @@ impl HumanEmitter {
         // 4 |   }
         //   |
         for pos in 0..=line_len {
-            draw_col_separator(buffer, line_offset + pos + 1, width_offset - 2);
+            draw_col_separator_no_space(buffer, line_offset + pos + 1, width_offset - 2);
         }
 
         // Write the horizontal lines for multiline annotations
@@ -1904,7 +1930,7 @@ impl HumanEmitter {
                     //
                     // LL | this line was highlighted
                     // LL | this line is just for context
-                    //   ...
+                    // ...
                     // LL | this line is just for context
                     // LL | this line was highlighted
                     _ => {
@@ -1925,7 +1951,7 @@ impl HumanEmitter {
                             )
                         }
 
-                        buffer.puts(row_num, max_line_num_len - 1, "...", Style::LineNumber);
+                        buffer.puts(row_num, 0, "...", Style::LineNumber);
                         row_num += 1;
 
                         if let Some((p, l)) = last_line {
@@ -2019,7 +2045,7 @@ impl HumanEmitter {
                     let offset: isize = offsets
                         .iter()
                         .filter_map(
-                            |(start, v)| if span_start_pos <= *start { None } else { Some(v) },
+                            |(start, v)| if span_start_pos < *start { None } else { Some(v) },
                         )
                         .sum();
                     let underline_start = (span_start_pos + start) as isize + offset;
@@ -2028,7 +2054,7 @@ impl HumanEmitter {
                     let padding: usize = max_line_num_len + 3;
                     for p in underline_start..underline_end {
                         if let DisplaySuggestion::Underline = show_code_change {
-                            // If this is a replacement, underline with `^`, if this is an addition
+                            // If this is a replacement, underline with `~`, if this is an addition
                             // underline with `+`.
                             buffer.putc(
                                 row_num,
@@ -2260,13 +2286,23 @@ impl HumanEmitter {
                     buffer.puts(*row_num, max_line_num_len + 1, "+ ", Style::Addition);
                 }
                 [] => {
-                    draw_col_separator(buffer, *row_num, max_line_num_len + 1);
+                    draw_col_separator_no_space(buffer, *row_num, max_line_num_len + 1);
                 }
                 _ => {
                     buffer.puts(*row_num, max_line_num_len + 1, "~ ", Style::Addition);
                 }
             }
-            buffer.append(*row_num, &normalize_whitespace(line_to_add), Style::NoStyle);
+            //   LL | line_to_add
+            //   ++^^^
+            //    |  |
+            //    |  magic `3`
+            //    `max_line_num_len`
+            buffer.puts(
+                *row_num,
+                max_line_num_len + 3,
+                &normalize_whitespace(line_to_add),
+                Style::NoStyle,
+            );
         } else if let DisplaySuggestion::Add = show_code_change {
             buffer.puts(*row_num, 0, &self.maybe_anonymized(line_num), Style::LineNumber);
             buffer.puts(*row_num, max_line_num_len + 1, "+ ", Style::Addition);

@@ -1,16 +1,17 @@
-//! Inlining pass for MIR functions
+//! Inlining pass for MIR functions.
+
 use crate::deref_separator::deref_finder;
 use rustc_attr::InlineAttr;
-use rustc_const_eval::transform::validate::validate_types;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_index::bit_set::BitSet;
 use rustc_index::Idx;
+use rustc_middle::bug;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::visit::*;
 use rustc_middle::mir::*;
 use rustc_middle::ty::TypeVisitableExt;
-use rustc_middle::ty::{self, Instance, InstanceDef, ParamEnv, Ty, TyCtxt};
+use rustc_middle::ty::{self, Instance, InstanceKind, ParamEnv, Ty, TyCtxt};
 use rustc_session::config::{DebugInfo, OptLevel};
 use rustc_span::source_map::Spanned;
 use rustc_span::sym;
@@ -20,6 +21,7 @@ use rustc_target::spec::abi::Abi;
 use crate::cost_checker::CostChecker;
 use crate::simplify::simplify_cfg;
 use crate::util;
+use crate::validate::validate_types;
 use std::iter;
 use std::ops::{Range, RangeFrom};
 
@@ -224,13 +226,8 @@ impl<'tcx> Inliner<'tcx> {
         // Normally, this shouldn't be required, but trait normalization failure can create a
         // validation ICE.
         let output_type = callee_body.return_ty();
-        if !util::relate_types(
-            self.tcx,
-            self.param_env,
-            ty::Variance::Covariant,
-            output_type,
-            destination_ty,
-        ) {
+        if !util::relate_types(self.tcx, self.param_env, ty::Covariant, output_type, destination_ty)
+        {
             trace!(?output_type, ?destination_ty);
             return Err("failed to normalize return type");
         }
@@ -260,13 +257,8 @@ impl<'tcx> Inliner<'tcx> {
                 self_arg_ty.into_iter().chain(arg_tuple_tys).zip(callee_body.args_iter())
             {
                 let input_type = callee_body.local_decls[input].ty;
-                if !util::relate_types(
-                    self.tcx,
-                    self.param_env,
-                    ty::Variance::Covariant,
-                    input_type,
-                    arg_ty,
-                ) {
+                if !util::relate_types(self.tcx, self.param_env, ty::Covariant, input_type, arg_ty)
+                {
                     trace!(?arg_ty, ?input_type);
                     return Err("failed to normalize tuple argument type");
                 }
@@ -275,13 +267,8 @@ impl<'tcx> Inliner<'tcx> {
             for (arg, input) in args.iter().zip(callee_body.args_iter()) {
                 let input_type = callee_body.local_decls[input].ty;
                 let arg_ty = arg.node.ty(&caller_body.local_decls, self.tcx);
-                if !util::relate_types(
-                    self.tcx,
-                    self.param_env,
-                    ty::Variance::Covariant,
-                    input_type,
-                    arg_ty,
-                ) {
+                if !util::relate_types(self.tcx, self.param_env, ty::Covariant, input_type, arg_ty)
+                {
                     trace!(?arg_ty, ?input_type);
                     return Err("failed to normalize argument type");
                 }
@@ -307,7 +294,7 @@ impl<'tcx> Inliner<'tcx> {
         }
 
         match callee.def {
-            InstanceDef::Item(_) => {
+            InstanceKind::Item(_) => {
                 // If there is no MIR available (either because it was not in metadata or
                 // because it has no MIR because it's an extern function), then the inliner
                 // won't cause cycles on this.
@@ -316,24 +303,24 @@ impl<'tcx> Inliner<'tcx> {
                 }
             }
             // These have no own callable MIR.
-            InstanceDef::Intrinsic(_) | InstanceDef::Virtual(..) => {
+            InstanceKind::Intrinsic(_) | InstanceKind::Virtual(..) => {
                 return Err("instance without MIR (intrinsic / virtual)");
             }
             // This cannot result in an immediate cycle since the callee MIR is a shim, which does
             // not get any optimizations run on it. Any subsequent inlining may cause cycles, but we
             // do not need to catch this here, we can wait until the inliner decides to continue
             // inlining a second time.
-            InstanceDef::VTableShim(_)
-            | InstanceDef::ReifyShim(..)
-            | InstanceDef::FnPtrShim(..)
-            | InstanceDef::ClosureOnceShim { .. }
-            | InstanceDef::ConstructCoroutineInClosureShim { .. }
-            | InstanceDef::CoroutineKindShim { .. }
-            | InstanceDef::DropGlue(..)
-            | InstanceDef::CloneShim(..)
-            | InstanceDef::ThreadLocalShim(..)
-            | InstanceDef::FnPtrAddrShim(..)
-            | InstanceDef::AsyncDropGlueCtorShim(..) => return Ok(()),
+            InstanceKind::VTableShim(_)
+            | InstanceKind::ReifyShim(..)
+            | InstanceKind::FnPtrShim(..)
+            | InstanceKind::ClosureOnceShim { .. }
+            | InstanceKind::ConstructCoroutineInClosureShim { .. }
+            | InstanceKind::CoroutineKindShim { .. }
+            | InstanceKind::DropGlue(..)
+            | InstanceKind::CloneShim(..)
+            | InstanceKind::ThreadLocalShim(..)
+            | InstanceKind::FnPtrAddrShim(..)
+            | InstanceKind::AsyncDropGlueCtorShim(..) => return Ok(()),
         }
 
         if self.tcx.is_constructor(callee_def_id) {
@@ -386,7 +373,7 @@ impl<'tcx> Inliner<'tcx> {
                 let callee =
                     Instance::resolve(self.tcx, self.param_env, def_id, args).ok().flatten()?;
 
-                if let InstanceDef::Virtual(..) | InstanceDef::Intrinsic(_) = callee.def {
+                if let InstanceKind::Virtual(..) | InstanceKind::Intrinsic(_) = callee.def {
                     return None;
                 }
 
@@ -398,7 +385,7 @@ impl<'tcx> Inliner<'tcx> {
 
                 // Additionally, check that the body that we're inlining actually agrees
                 // with the ABI of the trait that the item comes from.
-                if let InstanceDef::Item(instance_def_id) = callee.def
+                if let InstanceKind::Item(instance_def_id) = callee.def
                     && self.tcx.def_kind(instance_def_id) == DefKind::AssocFn
                     && let instance_fn_sig = self.tcx.fn_sig(instance_def_id).skip_binder()
                     && instance_fn_sig.abi() != fn_sig.abi()
@@ -637,8 +624,7 @@ impl<'tcx> Inliner<'tcx> {
         };
 
         // Copy the arguments if needed.
-        let args: Vec<_> =
-            self.make_call_args(args, &callsite, caller_body, &callee_body, return_block);
+        let args = self.make_call_args(args, &callsite, caller_body, &callee_body, return_block);
 
         let mut integrator = Integrator {
             args: &args,
@@ -720,18 +706,12 @@ impl<'tcx> Inliner<'tcx> {
             kind: TerminatorKind::Goto { target: integrator.map_block(START_BLOCK) },
         });
 
-        // Copy only unevaluated constants from the callee_body into the caller_body.
-        // Although we are only pushing `ConstKind::Unevaluated` consts to
-        // `required_consts`, here we may not only have `ConstKind::Unevaluated`
-        // because we are calling `instantiate_and_normalize_erasing_regions`.
-        caller_body.required_consts.extend(callee_body.required_consts.iter().copied().filter(
-            |&ct| match ct.const_ {
-                Const::Ty(_) => {
-                    bug!("should never encounter ty::UnevaluatedConst in `required_consts`")
-                }
-                Const::Val(..) | Const::Unevaluated(..) => true,
-            },
-        ));
+        // Copy required constants from the callee_body into the caller_body. Although we are only
+        // pushing unevaluated consts to `required_consts`, here they may have been evaluated
+        // because we are calling `instantiate_and_normalize_erasing_regions` -- so we filter again.
+        caller_body.required_consts.extend(
+            callee_body.required_consts.into_iter().filter(|ct| ct.const_.is_required_const()),
+        );
         // Now that we incorporated the callee's `required_consts`, we can remove the callee from
         // `mentioned_items` -- but we have to take their `mentioned_items` in return. This does
         // some extra work here to save the monomorphization collector work later. It helps a lot,
@@ -747,19 +727,20 @@ impl<'tcx> Inliner<'tcx> {
             caller_body.mentioned_items.remove(idx);
             caller_body.mentioned_items.extend(callee_body.mentioned_items);
         } else {
-            // If we can't find the callee, there's no point in adding its items.
-            // Probably it already got removed by being inlined elsewhere in the same function.
+            // If we can't find the callee, there's no point in adding its items. Probably it
+            // already got removed by being inlined elsewhere in the same function, so we already
+            // took its items.
         }
     }
 
     fn make_call_args(
         &self,
-        args: Vec<Spanned<Operand<'tcx>>>,
+        args: Box<[Spanned<Operand<'tcx>>]>,
         callsite: &CallSite<'tcx>,
         caller_body: &mut Body<'tcx>,
         callee_body: &Body<'tcx>,
         return_block: Option<BasicBlock>,
-    ) -> Vec<Local> {
+    ) -> Box<[Local]> {
         let tcx = self.tcx;
 
         // There is a bit of a mismatch between the *caller* of a closure and the *callee*.
@@ -786,7 +767,8 @@ impl<'tcx> Inliner<'tcx> {
         //
         // and the vector is `[closure_ref, tmp0, tmp1, tmp2]`.
         if callsite.fn_sig.abi() == Abi::RustCall && callee_body.spread_arg.is_none() {
-            let mut args = args.into_iter();
+            // FIXME(edition_2024): switch back to a normal method call.
+            let mut args = <_>::into_iter(args);
             let self_ = self.create_temp_if_necessary(
                 args.next().unwrap().node,
                 callsite,
@@ -820,7 +802,8 @@ impl<'tcx> Inliner<'tcx> {
 
             closure_ref_arg.chain(tuple_tmp_args).collect()
         } else {
-            args.into_iter()
+            // FIXME(edition_2024): switch back to a normal method call.
+            <_>::into_iter(args)
                 .map(|a| self.create_temp_if_necessary(a.node, callsite, caller_body, return_block))
                 .collect()
         }
@@ -1082,10 +1065,10 @@ impl<'tcx> MutVisitor<'tcx> for Integrator<'_, 'tcx> {
 #[instrument(skip(tcx), level = "debug")]
 fn try_instance_mir<'tcx>(
     tcx: TyCtxt<'tcx>,
-    instance: InstanceDef<'tcx>,
+    instance: InstanceKind<'tcx>,
 ) -> Result<&'tcx Body<'tcx>, &'static str> {
-    if let ty::InstanceDef::DropGlue(_, Some(ty))
-    | ty::InstanceDef::AsyncDropGlueCtorShim(_, Some(ty)) = instance
+    if let ty::InstanceKind::DropGlue(_, Some(ty))
+    | ty::InstanceKind::AsyncDropGlueCtorShim(_, Some(ty)) = instance
         && let ty::Adt(def, args) = ty.kind()
     {
         let fields = def.all_fields();

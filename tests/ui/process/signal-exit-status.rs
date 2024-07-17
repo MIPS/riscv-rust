@@ -3,6 +3,7 @@
 //@ ignore-sgx no processes
 //@ ignore-windows
 //@ ignore-fuchsia code returned as ZX_TASK_RETCODE_EXCEPTION_KILL, FIXME (#58590)
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(core_intrinsics)]
 

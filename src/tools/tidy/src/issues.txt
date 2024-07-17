@@ -439,7 +439,6 @@ ui/closures/issue-11873.rs
 ui/closures/issue-1460.rs
 ui/closures/issue-22864-1.rs
 ui/closures/issue-22864-2.rs
-ui/closures/issue-23012-supertrait-signature-inference.rs
 ui/closures/issue-25439.rs
 ui/closures/issue-41366.rs
 ui/closures/issue-42463.rs
@@ -2123,7 +2122,6 @@ ui/issues/issue-33687.rs
 ui/issues/issue-33770.rs
 ui/issues/issue-3389.rs
 ui/issues/issue-33941.rs
-ui/issues/issue-33992.rs
 ui/issues/issue-34047.rs
 ui/issues/issue-34074.rs
 ui/issues/issue-34209.rs
@@ -2447,7 +2445,6 @@ ui/issues/issue-53300.rs
 ui/issues/issue-53333.rs
 ui/issues/issue-53348.rs
 ui/issues/issue-53419.rs
-ui/issues/issue-53498.rs
 ui/issues/issue-53568.rs
 ui/issues/issue-5358-1.rs
 ui/issues/issue-53728.rs
@@ -2763,7 +2760,6 @@ ui/lint/issue-1866.rs
 ui/lint/issue-19102.rs
 ui/lint/issue-20343.rs
 ui/lint/issue-30302.rs
-ui/lint/issue-31924-non-snake-ffi.rs
 ui/lint/issue-34798.rs
 ui/lint/issue-35075.rs
 ui/lint/issue-47775-nested-macro-unnecessary-parens-arg.rs
@@ -2772,7 +2768,6 @@ ui/lint/issue-54099-camel-case-underscore-types.rs
 ui/lint/issue-57410-1.rs
 ui/lint/issue-57410.rs
 ui/lint/issue-63364.rs
-ui/lint/issue-66362-no-snake-case-warning-for-field-puns.rs
 ui/lint/issue-70819-dont-override-forbid-in-same-scope.rs
 ui/lint/issue-79546-fuel-ice.rs
 ui/lint/issue-79744.rs
@@ -2780,7 +2775,6 @@ ui/lint/issue-80988.rs
 ui/lint/issue-81218.rs
 ui/lint/issue-83477.rs
 ui/lint/issue-87274-paren-parent.rs
-ui/lint/issue-89469.rs
 ui/lint/issue-90614-accept-allow-text-direction-codepoint-in-comment-lint.rs
 ui/lint/issue-97094.rs
 ui/lint/issue-99387.rs
@@ -2916,7 +2910,6 @@ ui/macros/issue-95267.rs
 ui/macros/issue-95533.rs
 ui/macros/issue-98466-allow.rs
 ui/macros/issue-98466.rs
-ui/macros/issue-98790.rs
 ui/macros/issue-99261.rs
 ui/macros/issue-99265.rs
 ui/macros/issue-99907.rs
@@ -3863,7 +3856,6 @@ ui/statics/issue-91050-1.rs
 ui/statics/issue-91050-2.rs
 ui/std/issue-3563-3.rs
 ui/std/issue-81357-unsound-file-methods.rs
-ui/stdlib-unit-tests/issue-21058.rs
 ui/structs-enums/enum-rec/issue-17431-6.rs
 ui/structs-enums/enum-rec/issue-17431-7.rs
 ui/structs-enums/issue-103869.rs
@@ -3991,8 +3983,6 @@ ui/test-attrs/issue-52557.rs
 ui/test-attrs/issue-53675-a-test-called-panic.rs
 ui/threads-sendsync/issue-24313.rs
 ui/threads-sendsync/issue-29488.rs
-ui/threads-sendsync/issue-43733-2.rs
-ui/threads-sendsync/issue-43733.rs
 ui/threads-sendsync/issue-4446.rs
 ui/threads-sendsync/issue-4448.rs
 ui/threads-sendsync/issue-8827.rs

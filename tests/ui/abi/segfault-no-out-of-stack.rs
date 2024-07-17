@@ -2,6 +2,7 @@
 //@ ignore-wasm32 can't run commands
 //@ ignore-sgx no processes
 //@ ignore-fuchsia must translate zircon signal to SIGSEGV/SIGBUS, FIXME (#58590)
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(rustc_private)]
 

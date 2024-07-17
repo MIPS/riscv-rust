@@ -7,9 +7,7 @@ use crate::sys::cvt;
 use crate::sys::process::process_common::*;
 
 #[cfg(target_os = "linux")]
-use crate::os::linux::process::PidFd;
-#[cfg(target_os = "linux")]
-use crate::os::unix::io::AsRawFd;
+use crate::sys::pal::unix::linux::pidfd::PidFd;
 
 #[cfg(target_os = "vxworks")]
 use libc::RTP_ID as pid_t;
@@ -353,11 +351,11 @@ impl Command {
             // Inherit the signal mask from the parent rather than resetting it (i.e. do not call
             // pthread_sigmask).
 
-            // If #[unix_sigpipe] is specified, don't reset SIGPIPE to SIG_DFL.
-            // If #[unix_sigpipe] is not specified, reset SIGPIPE to SIG_DFL for backward compatibility.
+            // If -Zon-broken-pipe is used, don't reset SIGPIPE to SIG_DFL.
+            // If -Zon-broken-pipe is not used, reset SIGPIPE to SIG_DFL for backward compatibility.
             //
-            // #[unix_sigpipe] is an opportunity to change the default here.
-            if !crate::sys::pal::unix_sigpipe_attr_specified() {
+            // -Zon-broken-pipe is an opportunity to change the default here.
+            if !crate::sys::pal::on_broken_pipe_flag_used() {
                 #[cfg(target_os = "android")] // see issue #88585
                 {
                     let mut action: libc::sigaction = mem::zeroed();
@@ -420,13 +418,11 @@ impl Command {
     }
 
     #[cfg(not(any(
-        target_os = "macos",
-        target_os = "tvos",
-        target_os = "watchos",
         target_os = "freebsd",
         all(target_os = "linux", target_env = "gnu"),
         all(target_os = "linux", target_env = "musl"),
         target_os = "nto",
+        target_vendor = "apple",
     )))]
     fn posix_spawn(
         &mut self,
@@ -439,14 +435,11 @@ impl Command {
     // Only support platforms for which posix_spawn() can return ENOENT
     // directly.
     #[cfg(any(
-        target_os = "macos",
-        // FIXME: `target_os = "ios"`?
-        target_os = "tvos",
-        target_os = "watchos",
         target_os = "freebsd",
         all(target_os = "linux", target_env = "gnu"),
         all(target_os = "linux", target_env = "musl"),
         target_os = "nto",
+        target_vendor = "apple",
     ))]
     fn posix_spawn(
         &mut self,
@@ -455,7 +448,7 @@ impl Command {
     ) -> io::Result<Option<Process>> {
         use crate::mem::MaybeUninit;
         use crate::sys::weak::weak;
-        use crate::sys::{self, cvt_nz, unix_sigpipe_attr_specified};
+        use crate::sys::{self, cvt_nz, on_broken_pipe_flag_used};
 
         if self.get_gid().is_some()
             || self.get_uid().is_some()
@@ -530,7 +523,7 @@ impl Command {
         }
         let addchdir = match self.get_cwd() {
             Some(cwd) => {
-                if cfg!(any(target_os = "macos", target_os = "tvos", target_os = "watchos")) {
+                if cfg!(target_vendor = "apple") {
                     // There is a bug in macOS where a relative executable
                     // path like "../myprogram" will cause `posix_spawn` to
                     // successfully launch the program, but erroneously return
@@ -617,11 +610,11 @@ impl Command {
             // Inherit the signal mask from this process rather than resetting it (i.e. do not call
             // posix_spawnattr_setsigmask).
 
-            // If #[unix_sigpipe] is specified, don't reset SIGPIPE to SIG_DFL.
-            // If #[unix_sigpipe] is not specified, reset SIGPIPE to SIG_DFL for backward compatibility.
+            // If -Zon-broken-pipe is used, don't reset SIGPIPE to SIG_DFL.
+            // If -Zon-broken-pipe is not used, reset SIGPIPE to SIG_DFL for backward compatibility.
             //
-            // #[unix_sigpipe] is an opportunity to change the default here.
-            if !unix_sigpipe_attr_specified() {
+            // -Zon-broken-pipe is an opportunity to change the default here.
+            if !on_broken_pipe_flag_used() {
                 let mut default_set = MaybeUninit::<libc::sigset_t>::uninit();
                 cvt(sigemptyset(default_set.as_mut_ptr()))?;
                 cvt(sigaddset(default_set.as_mut_ptr(), libc::SIGPIPE))?;
@@ -820,16 +813,7 @@ impl Process {
         #[cfg(target_os = "linux")]
         if let Some(pid_fd) = self.pidfd.as_ref() {
             // pidfd_send_signal predates pidfd_open. so if we were able to get an fd then sending signals will work too
-            return cvt(unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    pid_fd.as_raw_fd(),
-                    libc::SIGKILL,
-                    crate::ptr::null::<()>(),
-                    0,
-                )
-            })
-            .map(drop);
+            return pid_fd.kill();
         }
         cvt(unsafe { libc::kill(self.pid, libc::SIGKILL) }).map(drop)
     }
@@ -841,12 +825,7 @@ impl Process {
         }
         #[cfg(target_os = "linux")]
         if let Some(pid_fd) = self.pidfd.as_ref() {
-            let mut siginfo: libc::siginfo_t = unsafe { crate::mem::zeroed() };
-
-            cvt_r(|| unsafe {
-                libc::waitid(libc::P_PIDFD, pid_fd.as_raw_fd() as u32, &mut siginfo, libc::WEXITED)
-            })?;
-            let status = ExitStatus::from_waitid_siginfo(siginfo);
+            let status = pid_fd.wait()?;
             self.status = Some(status);
             return Ok(status);
         }
@@ -862,22 +841,11 @@ impl Process {
         }
         #[cfg(target_os = "linux")]
         if let Some(pid_fd) = self.pidfd.as_ref() {
-            let mut siginfo: libc::siginfo_t = unsafe { crate::mem::zeroed() };
-
-            cvt(unsafe {
-                libc::waitid(
-                    libc::P_PIDFD,
-                    pid_fd.as_raw_fd() as u32,
-                    &mut siginfo,
-                    libc::WEXITED | libc::WNOHANG,
-                )
-            })?;
-            if unsafe { siginfo.si_pid() } == 0 {
-                return Ok(None);
+            let status = pid_fd.try_wait()?;
+            if let Some(status) = status {
+                self.status = Some(status)
             }
-            let status = ExitStatus::from_waitid_siginfo(siginfo);
-            self.status = Some(status);
-            return Ok(Some(status));
+            return Ok(status);
         }
         let mut status = 0 as c_int;
         let pid = cvt(unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) })?;
@@ -1040,28 +1008,28 @@ fn signal_string(signal: i32) -> &'static str {
         #[cfg(any(target_os = "linux", target_os = "nto"))]
         libc::SIGPWR => " (SIGPWR)",
         #[cfg(any(
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "tvos",
             target_os = "freebsd",
             target_os = "netbsd",
             target_os = "openbsd",
             target_os = "dragonfly",
             target_os = "nto",
+            target_vendor = "apple",
         ))]
         libc::SIGEMT => " (SIGEMT)",
         #[cfg(any(
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "tvos",
             target_os = "freebsd",
             target_os = "netbsd",
             target_os = "openbsd",
-            target_os = "dragonfly"
+            target_os = "dragonfly",
+            target_vendor = "apple",
         ))]
         libc::SIGINFO => " (SIGINFO)",
         #[cfg(target_os = "hurd")]
         libc::SIGLOST => " (SIGLOST)",
+        #[cfg(target_os = "freebsd")]
+        libc::SIGTHR => " (SIGTHR)",
+        #[cfg(target_os = "freebsd")]
+        libc::SIGLIBRT => " (SIGLIBRT)",
         _ => "",
     }
 }
@@ -1110,20 +1078,33 @@ impl ExitStatusError {
 }
 
 #[cfg(target_os = "linux")]
-#[unstable(feature = "linux_pidfd", issue = "82971")]
-impl crate::os::linux::process::ChildExt for crate::process::Child {
-    fn pidfd(&self) -> io::Result<&PidFd> {
-        self.handle
-            .pidfd
-            .as_ref()
-            .ok_or_else(|| Error::new(ErrorKind::Uncategorized, "No pidfd was created."))
-    }
+mod linux_child_ext {
 
-    fn take_pidfd(&mut self) -> io::Result<PidFd> {
-        self.handle
-            .pidfd
-            .take()
-            .ok_or_else(|| Error::new(ErrorKind::Uncategorized, "No pidfd was created."))
+    use crate::io;
+    use crate::mem;
+    use crate::os::linux::process as os;
+    use crate::sys::pal::unix::linux::pidfd as imp;
+    use crate::sys::pal::unix::ErrorKind;
+    use crate::sys_common::FromInner;
+
+    #[unstable(feature = "linux_pidfd", issue = "82971")]
+    impl crate::os::linux::process::ChildExt for crate::process::Child {
+        fn pidfd(&self) -> io::Result<&os::PidFd> {
+            self.handle
+                .pidfd
+                .as_ref()
+                // SAFETY: The os type is a transparent wrapper, therefore we can transmute references
+                .map(|fd| unsafe { mem::transmute::<&imp::PidFd, &os::PidFd>(fd) })
+                .ok_or_else(|| io::Error::new(ErrorKind::Uncategorized, "No pidfd was created."))
+        }
+
+        fn into_pidfd(mut self) -> Result<os::PidFd, Self> {
+            self.handle
+                .pidfd
+                .take()
+                .map(|fd| <os::PidFd as FromInner<imp::PidFd>>::from_inner(fd))
+                .ok_or_else(|| self)
+        }
     }
 }
 

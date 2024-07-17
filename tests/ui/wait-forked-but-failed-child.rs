@@ -4,10 +4,9 @@
 //@ ignore-vxworks no 'ps'
 //@ ignore-fuchsia no 'ps'
 //@ ignore-nto no 'ps'
+//@ ignore-riscv64-mti-linux-gnu-cross-compile
 
 #![feature(rustc_private)]
-
-extern crate libc;
 
 use std::process::Command;
 
@@ -28,6 +27,7 @@ use std::process::Command;
 
 #[cfg(unix)]
 fn find_zombies() {
+    extern crate libc;
     let my_pid = unsafe { libc::getpid() };
 
     // https://pubs.opengroup.org/onlinepubs/9699919799/utilities/ps.html

@@ -4,12 +4,12 @@ use rustc_data_structures::profiling::TimePassesFormat;
 use rustc_errors::{emitter::HumanReadableErrorType, registry, ColorConfig};
 use rustc_session::config::{
     build_configuration, build_session_options, rustc_optgroups, BranchProtection, CFGuard, Cfg,
-    CollapseMacroDebuginfo, CoverageOptions, DebugInfo, DumpMonoStatsFormat, ErrorOutputType,
-    ExternEntry, ExternLocation, Externs, FunctionReturn, InliningThreshold, Input,
-    InstrumentCoverage, InstrumentXRay, LinkSelfContained, LinkerPluginLto, LocationDetail, LtoCli,
-    NextSolverConfig, OomStrategy, Options, OutFileName, OutputType, OutputTypes, PAuthKey, PacRet,
-    Passes, Polonius, ProcMacroExecutionStrategy, Strip, SwitchWithOptPath, SymbolManglingVersion,
-    WasiExecModel,
+    CollapseMacroDebuginfo, CoverageLevel, CoverageOptions, DebugInfo, DumpMonoStatsFormat,
+    ErrorOutputType, ExternEntry, ExternLocation, Externs, FunctionReturn, InliningThreshold,
+    Input, InstrumentCoverage, InstrumentXRay, LinkSelfContained, LinkerPluginLto, LocationDetail,
+    LtoCli, NextSolverConfig, OomStrategy, Options, OutFileName, OutputType, OutputTypes, PAuthKey,
+    PacRet, Passes, Polonius, ProcMacroExecutionStrategy, Strip, SwitchWithOptPath,
+    SymbolManglingVersion, WasiExecModel,
 };
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
@@ -20,9 +20,9 @@ use rustc_span::source_map::{RealFileLoader, SourceMapInputs};
 use rustc_span::symbol::sym;
 use rustc_span::{FileName, SourceFileHashAlgorithm};
 use rustc_target::spec::{
-    CodeModel, LinkerFlavorCli, MergeFunctions, PanicStrategy, RelocModel, WasmCAbi,
+    CodeModel, FramePointer, LinkerFlavorCli, MergeFunctions, OnBrokenPipe, PanicStrategy,
+    RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, TlsModel, WasmCAbi,
 };
-use rustc_target::spec::{RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, TlsModel};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ where
             Arc::default(),
             Default::default(),
         );
-        let cfg = parse_cfg(&sess.dcx(), matches.opt_strs("cfg"));
+        let cfg = parse_cfg(sess.dcx(), matches.opt_strs("cfg"));
         let cfg = build_configuration(&sess, cfg);
         f(sess, cfg)
     });
@@ -321,6 +321,7 @@ fn test_search_paths_tracking_hash_different_order() {
             &opts.target_triple,
             &early_dcx,
             search_path,
+            false,
         ));
     };
 
@@ -599,11 +600,12 @@ fn test_codegen_options_tracking_hash() {
     // Make sure that changing a [TRACKED] option changes the hash.
     // tidy-alphabetical-start
     tracked!(code_model, Some(CodeModel::Large));
+    tracked!(collapse_macro_debuginfo, CollapseMacroDebuginfo::Yes);
     tracked!(control_flow_guard, CFGuard::Checks);
     tracked!(debug_assertions, Some(true));
     tracked!(debuginfo, DebugInfo::Limited);
     tracked!(embed_bitcode, false);
-    tracked!(force_frame_pointers, Some(false));
+    tracked!(force_frame_pointers, FramePointer::Always);
     tracked!(force_unwind_tables, Some(true));
     tracked!(inline_threshold, Some(0xf007ba11));
     tracked!(instrument_coverage, InstrumentCoverage::Yes);
@@ -759,12 +761,10 @@ fn test_unstable_options_tracking_hash() {
         })
     );
     tracked!(codegen_backend, Some("abc".to_string()));
-    tracked!(collapse_macro_debuginfo, CollapseMacroDebuginfo::Yes);
-    tracked!(coverage_options, CoverageOptions { branch: true, mcdc: true });
+    tracked!(coverage_options, CoverageOptions { level: CoverageLevel::Mcdc, no_mir_spans: true });
     tracked!(crate_attr, vec!["abc".to_string()]);
     tracked!(cross_crate_inline_threshold, InliningThreshold::Always);
     tracked!(debug_info_for_profiling, true);
-    tracked!(debug_macros, true);
     tracked!(default_hidden_visibility, Some(true));
     tracked!(dep_info_omit_d_target, true);
     tracked!(direct_access_external_data, Some(true));
@@ -773,6 +773,7 @@ fn test_unstable_options_tracking_hash() {
     tracked!(emit_thin_lto, false);
     tracked!(export_executable_symbols, true);
     tracked!(fewer_names, Some(true));
+    tracked!(fixed_x18, true);
     tracked!(flatten_format_args, false);
     tracked!(force_unstable_if_unmarked, true);
     tracked!(fuel, Some(("abc".to_string(), 99)));
@@ -799,16 +800,14 @@ fn test_unstable_options_tracking_hash() {
     tracked!(mir_opt_level, Some(4));
     tracked!(move_size_limit, Some(4096));
     tracked!(mutable_noalias, false);
-    tracked!(
-        next_solver,
-        Some(NextSolverConfig { coherence: true, globally: false, dump_tree: Default::default() })
-    );
+    tracked!(next_solver, Some(NextSolverConfig { coherence: true, globally: false }));
     tracked!(no_generate_arange_section, true);
     tracked!(no_jump_tables, true);
     tracked!(no_link, true);
     tracked!(no_profiler_runtime, true);
     tracked!(no_trait_vptr, true);
     tracked!(no_unique_section_names, true);
+    tracked!(on_broken_pipe, OnBrokenPipe::Kill);
     tracked!(oom, OomStrategy::Panic);
     tracked!(osx_rpath_install_name, true);
     tracked!(packed_bundled_libs, true);

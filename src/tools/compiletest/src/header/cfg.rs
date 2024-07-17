@@ -58,7 +58,7 @@ pub(super) fn parse_cfg_name_directive<'a>(
 
     // Some of the matchers might be "" depending on what the target information is. To avoid
     // problems we outright reject empty directives.
-    if name == "" {
+    if name.is_empty() {
         return ParsedNameDirective::not_a_directive();
     }
 
@@ -159,6 +159,12 @@ pub(super) fn parse_cfg_name_directive<'a>(
         message: "when the architecture is part of the Thumb family"
     }
 
+    condition! {
+        name: "apple",
+        condition: config.target.contains("apple"),
+        message: "when the target vendor is Apple"
+    }
+
     // Technically the locally built compiler uses the "dev" channel rather than the "nightly"
     // channel, even though most people don't know or won't care about it. To avoid confusion, we
     // treat the "dev" channel as the "nightly" channel when processing the directive.
@@ -172,6 +178,11 @@ pub(super) fn parse_cfg_name_directive<'a>(
         name: "cross-compile",
         condition: config.target != config.host,
         message: "when cross-compiling"
+    }
+    condition! {
+        name: "riscv64-mti-linux-gnu-cross-compile",
+        condition: config.target != config.host && config.target == "riscv64-mti-linux-gnu",
+        message: "when cross-compiling for target riscv64-mti-linux-gnu"
     }
     condition! {
         name: "endian-big",

@@ -169,7 +169,7 @@ pub trait FromIterator<A>: Sized {
 /// assert_eq!(lengths, [1, 1, 3, 1]);
 /// # Ok(()) }
 /// ```
-#[stable(feature = "from_iterator_for_tuple", since = "CURRENT_RUSTC_VERSION")]
+#[stable(feature = "from_iterator_for_tuple", since = "1.79.0")]
 impl<A, B, AE, BE> FromIterator<(AE, BE)> for (A, B)
 where
     A: Default + Extend<AE>,
@@ -268,7 +268,6 @@ where
 /// }
 /// ```
 #[rustc_diagnostic_item = "IntoIterator"]
-#[rustc_skip_array_during_method_dispatch]
 #[rustc_on_unimplemented(
     on(
         _Self = "core::ops::range::RangeTo<Idx>",
@@ -312,6 +311,7 @@ where
     label = "`{Self}` is not an iterator",
     message = "`{Self}` is not an iterator"
 )]
+#[rustc_skip_during_method_dispatch(array, boxed_slice)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait IntoIterator {
     /// The type of the elements being iterated over.

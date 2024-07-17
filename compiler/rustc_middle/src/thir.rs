@@ -15,6 +15,7 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::{BindingMode, ByRef, HirId, MatchSource, RangeEnd};
 use rustc_index::newtype_index;
 use rustc_index::IndexVec;
+use rustc_macros::{HashStable, TyDecodable, TyEncodable, TypeVisitable};
 use rustc_middle::middle::region;
 use rustc_middle::mir::interpret::AllocId;
 use rustc_middle::mir::{self, BinOp, BorrowKind, FakeReadCause, UnOp};
@@ -31,6 +32,7 @@ use rustc_target::asm::InlineAsmRegOrRegClass;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Index;
+use tracing::instrument;
 
 pub mod visit;
 
@@ -642,7 +644,7 @@ impl<'tcx> Pat<'tcx> {
             AscribeUserType { subpattern, .. }
             | Binding { subpattern: Some(subpattern), .. }
             | Deref { subpattern }
-            | DerefPattern { subpattern }
+            | DerefPattern { subpattern, .. }
             | InlineConstant { subpattern, .. } => subpattern.walk_(it),
             Leaf { subpatterns } | Variant { subpatterns, .. } => {
                 subpatterns.iter().for_each(|field| field.pattern.walk_(it))
@@ -680,6 +682,23 @@ impl<'tcx> Pat<'tcx> {
             it(p);
             true
         })
+    }
+
+    /// Whether this a never pattern.
+    pub fn is_never_pattern(&self) -> bool {
+        let mut is_never_pattern = false;
+        self.walk(|pat| match &pat.kind {
+            PatKind::Never => {
+                is_never_pattern = true;
+                false
+            }
+            PatKind::Or { pats } => {
+                is_never_pattern = pats.iter().all(|p| p.is_never_pattern());
+                false
+            }
+            _ => true,
+        });
+        is_never_pattern
     }
 }
 
@@ -760,6 +779,7 @@ pub enum PatKind<'tcx> {
     /// Deref pattern, written `box P` for now.
     DerefPattern {
         subpattern: Box<Pat<'tcx>>,
+        mutability: hir::Mutability,
     },
 
     /// One of the following:
@@ -1013,8 +1033,8 @@ impl<'tcx> PatRangeBoundary<'tcx> {
                 if let (Some(a), Some(b)) = (a.try_to_scalar_int(), b.try_to_scalar_int()) {
                     let sz = ty.primitive_size(tcx);
                     let cmp = match ty.kind() {
-                        ty::Uint(_) | ty::Char => a.assert_uint(sz).cmp(&b.assert_uint(sz)),
-                        ty::Int(_) => a.assert_int(sz).cmp(&b.assert_int(sz)),
+                        ty::Uint(_) | ty::Char => a.to_uint(sz).cmp(&b.to_uint(sz)),
+                        ty::Int(_) => a.to_int(sz).cmp(&b.to_int(sz)),
                         _ => unreachable!(),
                     };
                     return Some(cmp);
@@ -1027,6 +1047,12 @@ impl<'tcx> PatRangeBoundary<'tcx> {
         let b = other.eval_bits(ty, tcx, param_env);
 
         match ty.kind() {
+            ty::Float(ty::FloatTy::F16) => {
+                use rustc_apfloat::Float;
+                let a = rustc_apfloat::ieee::Half::from_bits(a);
+                let b = rustc_apfloat::ieee::Half::from_bits(b);
+                a.partial_cmp(&b)
+            }
             ty::Float(ty::FloatTy::F32) => {
                 use rustc_apfloat::Float;
                 let a = rustc_apfloat::ieee::Single::from_bits(a);
@@ -1037,6 +1063,12 @@ impl<'tcx> PatRangeBoundary<'tcx> {
                 use rustc_apfloat::Float;
                 let a = rustc_apfloat::ieee::Double::from_bits(a);
                 let b = rustc_apfloat::ieee::Double::from_bits(b);
+                a.partial_cmp(&b)
+            }
+            ty::Float(ty::FloatTy::F128) => {
+                use rustc_apfloat::Float;
+                let a = rustc_apfloat::ieee::Quad::from_bits(a);
+                let b = rustc_apfloat::ieee::Quad::from_bits(b);
                 a.partial_cmp(&b)
             }
             ty::Int(ity) => {
@@ -1166,7 +1198,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                 }
                 write!(f, "{subpattern}")
             }
-            PatKind::DerefPattern { ref subpattern } => {
+            PatKind::DerefPattern { ref subpattern, .. } => {
                 write!(f, "deref!({subpattern})")
             }
             PatKind::Constant { value } => write!(f, "{value}"),
@@ -1208,6 +1240,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
 #[cfg(target_pointer_width = "64")]
 mod size_asserts {
     use super::*;
+    use rustc_data_structures::static_assert_size;
     // tidy-alphabetical-start
     static_assert_size!(Block, 48);
     static_assert_size!(Expr<'_>, 64);

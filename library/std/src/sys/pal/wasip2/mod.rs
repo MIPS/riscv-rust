@@ -34,21 +34,8 @@ pub mod process;
 pub mod stdio;
 #[path = "../wasi/thread.rs"]
 pub mod thread;
-#[path = "../unsupported/thread_local_dtor.rs"]
-pub mod thread_local_dtor;
-#[path = "../unsupported/thread_local_key.rs"]
-pub mod thread_local_key;
 #[path = "../wasi/time.rs"]
 pub mod time;
-
-cfg_if::cfg_if! {
-    if #[cfg(target_feature = "atomics")] {
-        compile_error!("The wasm32-wasip2 target does not support atomics");
-    } else {
-        #[path = "../unsupported/thread_parking.rs"]
-        pub mod thread_parking;
-    }
-}
 
 #[path = "../unsupported/common.rs"]
 #[deny(unsafe_op_in_unsafe_fn)]

@@ -49,7 +49,7 @@ fn is_eligible_for_coverage(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
 /// Query implementation for `coverage_ids_info`.
 fn coverage_ids_info<'tcx>(
     tcx: TyCtxt<'tcx>,
-    instance_def: ty::InstanceDef<'tcx>,
+    instance_def: ty::InstanceKind<'tcx>,
 ) -> CoverageIdsInfo {
     let mir_body = tcx.instance_mir(instance_def);
 
@@ -61,17 +61,7 @@ fn coverage_ids_info<'tcx>(
         .max()
         .unwrap_or(CounterId::ZERO);
 
-    let mcdc_bitmap_bytes = mir_body
-        .coverage_branch_info
-        .as_deref()
-        .map(|info| {
-            info.mcdc_decision_spans
-                .iter()
-                .fold(0, |acc, decision| acc + (1_u32 << decision.conditions_num).div_ceil(8))
-        })
-        .unwrap_or_default();
-
-    CoverageIdsInfo { max_counter_id, mcdc_bitmap_bytes }
+    CoverageIdsInfo { max_counter_id }
 }
 
 fn all_coverage_in_mir_body<'a, 'tcx>(

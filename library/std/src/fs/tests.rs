@@ -406,7 +406,7 @@ fn file_test_read_buf() {
     let filename = &tmpdir.join("test");
     check!(fs::write(filename, &[1, 2, 3, 4]));
 
-    let mut buf: [MaybeUninit<u8>; 128] = MaybeUninit::uninit_array();
+    let mut buf: [MaybeUninit<u8>; 128] = [MaybeUninit::uninit(); 128];
     let mut buf = BorrowedBuf::from(buf.as_mut_slice());
     let mut file = check!(File::open(filename));
     check!(file.read_buf(buf.unfilled()));
@@ -1431,7 +1431,7 @@ fn metadata_access_times() {
     assert_eq!(check!(a.modified()), check!(a.modified()));
     assert_eq!(check!(b.accessed()), check!(b.modified()));
 
-    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+    if cfg!(target_vendor = "apple") || cfg!(target_os = "windows") {
         check!(a.created());
         check!(b.created());
     }
@@ -1657,23 +1657,9 @@ fn test_file_times() {
     let accessed = SystemTime::UNIX_EPOCH + Duration::from_secs(12345);
     let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(54321);
     times = times.set_accessed(accessed).set_modified(modified);
-    #[cfg(any(
-        windows,
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "watchos",
-        target_os = "visionos",
-        target_os = "tvos",
-    ))]
+    #[cfg(any(windows, target_vendor = "apple"))]
     let created = SystemTime::UNIX_EPOCH + Duration::from_secs(32123);
-    #[cfg(any(
-        windows,
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "watchos",
-        target_os = "visionos",
-        target_os = "tvos",
-    ))]
+    #[cfg(any(windows, target_vendor = "apple"))]
     {
         times = times.set_created(created);
     }
@@ -1698,27 +1684,14 @@ fn test_file_times() {
     let metadata = file.metadata().unwrap();
     assert_eq!(metadata.accessed().unwrap(), accessed);
     assert_eq!(metadata.modified().unwrap(), modified);
-    #[cfg(any(
-        windows,
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "watchos",
-        target_os = "visionos",
-        target_os = "tvos",
-    ))]
+    #[cfg(any(windows, target_vendor = "apple"))]
     {
         assert_eq!(metadata.created().unwrap(), created);
     }
 }
 
 #[test]
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "watchos",
-    target_os = "visionos"
-))]
+#[cfg(target_vendor = "apple")]
 fn test_file_times_pre_epoch_with_nanos() {
     #[cfg(target_os = "ios")]
     use crate::os::ios::fs::FileTimesExt;

@@ -174,8 +174,8 @@
 //! )
 //! ```
 
-pub use StaticFields::*;
-pub use SubstructureFields::*;
+pub(crate) use StaticFields::*;
+pub(crate) use SubstructureFields::*;
 
 use crate::{deriving, errors};
 use rustc_ast::ptr::P;
@@ -195,9 +195,9 @@ use std::vec;
 use thin_vec::{thin_vec, ThinVec};
 use ty::{Bounds, Path, Ref, Self_, Ty};
 
-pub mod ty;
+pub(crate) mod ty;
 
-pub struct TraitDef<'a> {
+pub(crate) struct TraitDef<'a> {
     /// The span for the current #[derive(Foo)] header.
     pub span: Span,
 
@@ -224,7 +224,7 @@ pub struct TraitDef<'a> {
     pub is_const: bool,
 }
 
-pub struct MethodDef<'a> {
+pub(crate) struct MethodDef<'a> {
     /// name of the method
     pub name: Symbol,
     /// List of generics, e.g., `R: rand::Rng`
@@ -248,7 +248,7 @@ pub struct MethodDef<'a> {
 
 /// How to handle fieldless enum variants.
 #[derive(PartialEq)]
-pub enum FieldlessVariantsStrategy {
+pub(crate) enum FieldlessVariantsStrategy {
     /// Combine fieldless variants into a single match arm.
     /// This assumes that relevant information has been handled
     /// by looking at the enum's discriminant.
@@ -263,7 +263,7 @@ pub enum FieldlessVariantsStrategy {
 }
 
 /// All the data about the data structure/method being derived upon.
-pub struct Substructure<'a> {
+pub(crate) struct Substructure<'a> {
     /// ident of self
     pub type_ident: Ident,
     /// Verbatim access to any non-selflike arguments, i.e. arguments that
@@ -273,7 +273,7 @@ pub struct Substructure<'a> {
 }
 
 /// Summary of the relevant parts of a struct/enum field.
-pub struct FieldInfo {
+pub(crate) struct FieldInfo {
     pub span: Span,
     /// None for tuple structs/normal enum variants, Some for normal
     /// structs/struct enum variants.
@@ -287,13 +287,13 @@ pub struct FieldInfo {
 }
 
 #[derive(Copy, Clone)]
-pub enum IsTuple {
+pub(crate) enum IsTuple {
     No,
     Yes,
 }
 
 /// Fields for a static method
-pub enum StaticFields {
+pub(crate) enum StaticFields {
     /// Tuple and unit structs/enum variants like this.
     Unnamed(Vec<Span>, IsTuple),
     /// Normal structs/struct variants.
@@ -301,7 +301,7 @@ pub enum StaticFields {
 }
 
 /// A summary of the possible sets of fields.
-pub enum SubstructureFields<'a> {
+pub(crate) enum SubstructureFields<'a> {
     /// A non-static method where `Self` is a struct.
     Struct(&'a ast::VariantData, Vec<FieldInfo>),
 
@@ -329,10 +329,10 @@ pub enum SubstructureFields<'a> {
 
 /// Combine the values of all the fields together. The last argument is
 /// all the fields of all the structures.
-pub type CombineSubstructureFunc<'a> =
+pub(crate) type CombineSubstructureFunc<'a> =
     Box<dyn FnMut(&ExtCtxt<'_>, Span, &Substructure<'_>) -> BlockOrExpr + 'a>;
 
-pub fn combine_substructure(
+pub(crate) fn combine_substructure(
     f: CombineSubstructureFunc<'_>,
 ) -> RefCell<CombineSubstructureFunc<'_>> {
     RefCell::new(f)
@@ -349,7 +349,7 @@ struct TypeParameter {
 /// avoiding the insertion of any unnecessary blocks.
 ///
 /// The statements come before the expression.
-pub struct BlockOrExpr(ThinVec<ast::Stmt>, Option<P<Expr>>);
+pub(crate) struct BlockOrExpr(ThinVec<ast::Stmt>, Option<P<Expr>>);
 
 impl BlockOrExpr {
     pub fn new_stmts(stmts: ThinVec<ast::Stmt>) -> BlockOrExpr {
@@ -412,6 +412,15 @@ fn find_type_parameters(
 
     impl<'a, 'b> visit::Visitor<'a> for Visitor<'a, 'b> {
         fn visit_ty(&mut self, ty: &'a ast::Ty) {
+            let stack_len = self.bound_generic_params_stack.len();
+            if let ast::TyKind::BareFn(bare_fn) = &ty.kind
+                && !bare_fn.generic_params.is_empty()
+            {
+                // Given a field `x: for<'a> fn(T::SomeType<'a>)`, we wan't to account for `'a` so
+                // that we generate `where for<'a> T::SomeType<'a>: ::core::clone::Clone`. #122622
+                self.bound_generic_params_stack.extend(bare_fn.generic_params.iter().cloned());
+            }
+
             if let ast::TyKind::Path(_, path) = &ty.kind
                 && let Some(segment) = path.segments.first()
                 && self.ty_param_names.contains(&segment.ident.name)
@@ -422,7 +431,8 @@ fn find_type_parameters(
                 });
             }
 
-            visit::walk_ty(self, ty)
+            visit::walk_ty(self, ty);
+            self.bound_generic_params_stack.truncate(stack_len);
         }
 
         // Place bound generic params on a stack, to extract them when a type is encountered.
@@ -788,7 +798,7 @@ impl<'a> TraitDef<'a> {
             Ident::empty(),
             attrs,
             ast::ItemKind::Impl(Box::new(ast::Impl {
-                unsafety: ast::Unsafe::No,
+                safety: ast::Safety::Default,
                 polarity: ast::ImplPolarity::Positive,
                 defaultness: ast::Defaultness::Final,
                 constness: if self.is_const { ast::Const::Yes(DUMMY_SP) } else { ast::Const::No },
@@ -1621,14 +1631,13 @@ impl<'a> TraitDef<'a> {
                         };
 
                         if let Some(ty) = exception {
-                            cx.sess.psess.buffer_lint_with_diagnostic(
+                            cx.sess.psess.buffer_lint(
                                 BYTE_SLICE_IN_PACKED_STRUCT_WITH_DERIVE,
                                 sp,
                                 ast::CRATE_NODE_ID,
-                                format!(
-                                    "{ty} slice in a packed struct that derives a built-in trait"
-                                ),
-                                rustc_lint_defs::BuiltinLintDiag::ByteSliceInPackedStructWithDerive,
+                                rustc_lint_defs::BuiltinLintDiag::ByteSliceInPackedStructWithDerive {
+                                    ty: ty.to_string(),
+                                },
                             );
                         } else {
                             // Wrap the expression in `{...}`, causing a copy.
@@ -1647,7 +1656,7 @@ impl<'a> TraitDef<'a> {
 /// The function passed to `cs_fold` is called repeatedly with a value of this
 /// type. It describes one part of the code generation. The result is always an
 /// expression.
-pub enum CsFold<'a> {
+pub(crate) enum CsFold<'a> {
     /// The basic case: a field expression for one or more selflike args. E.g.
     /// for `PartialEq::eq` this is something like `self.x == other.x`.
     Single(&'a FieldInfo),
@@ -1662,7 +1671,7 @@ pub enum CsFold<'a> {
 
 /// Folds over fields, combining the expressions for each field in a sequence.
 /// Statics may not be folded over.
-pub fn cs_fold<F>(
+pub(crate) fn cs_fold<F>(
     use_foldl: bool,
     cx: &ExtCtxt<'_>,
     trait_span: Span,

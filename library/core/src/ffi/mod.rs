@@ -133,7 +133,8 @@ mod c_char_definition {
                 any(target_arch = "aarch64", target_arch = "riscv64")
             ),
             all(target_os = "nto", target_arch = "aarch64"),
-            target_os = "horizon"
+            target_os = "horizon",
+            target_os = "aix",
         ))] {
             pub type c_char = u8;
         } else {
@@ -213,7 +214,7 @@ impl fmt::Debug for c_void {
         not(target_arch = "s390x"),
         not(target_arch = "x86_64")
     ),
-    all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
+    all(target_arch = "aarch64", target_vendor = "apple"),
     target_family = "wasm",
     target_os = "uefi",
     windows,
@@ -241,7 +242,7 @@ pub struct VaListImpl<'f> {
         not(target_arch = "s390x"),
         not(target_arch = "x86_64")
     ),
-    all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
+    all(target_arch = "aarch64", target_vendor = "apple"),
     target_family = "wasm",
     target_os = "uefi",
     windows,
@@ -265,7 +266,7 @@ impl<'f> fmt::Debug for VaListImpl<'f> {
 /// http://infocenter.arm.com/help/topic/com.arm.doc.ihi0055b/IHI0055B_aapcs64.pdf
 #[cfg(all(
     target_arch = "aarch64",
-    not(any(target_os = "macos", target_os = "ios", target_os = "tvos")),
+    not(target_vendor = "apple"),
     not(target_os = "uefi"),
     not(windows),
 ))]
@@ -362,10 +363,7 @@ pub struct VaList<'a, 'f: 'a> {
             not(target_arch = "s390x"),
             not(target_arch = "x86_64")
         ),
-        all(
-            target_arch = "aarch64",
-            any(target_os = "macos", target_os = "ios", target_os = "tvos")
-        ),
+        all(target_arch = "aarch64", target_vendor = "apple"),
         target_family = "wasm",
         target_os = "uefi",
         windows,
@@ -379,10 +377,7 @@ pub struct VaList<'a, 'f: 'a> {
             target_arch = "s390x",
             target_arch = "x86_64"
         ),
-        any(
-            not(target_arch = "aarch64"),
-            not(any(target_os = "macos", target_os = "ios", target_os = "tvos"))
-        ),
+        any(not(target_arch = "aarch64"), not(target_vendor = "apple")),
         not(target_family = "wasm"),
         not(target_os = "uefi"),
         not(windows),
@@ -399,7 +394,7 @@ pub struct VaList<'a, 'f: 'a> {
         not(target_arch = "s390x"),
         not(target_arch = "x86_64")
     ),
-    all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios", target_os = "tvos")),
+    all(target_arch = "aarch64", target_vendor = "apple"),
     target_family = "wasm",
     target_os = "uefi",
     windows,
@@ -425,10 +420,7 @@ impl<'f> VaListImpl<'f> {
         target_arch = "s390x",
         target_arch = "x86_64"
     ),
-    any(
-        not(target_arch = "aarch64"),
-        not(any(target_os = "macos", target_os = "ios", target_os = "tvos"))
-    ),
+    any(not(target_arch = "aarch64"), not(target_vendor = "apple")),
     not(target_family = "wasm"),
     not(target_os = "uefi"),
     not(windows),
@@ -492,7 +484,7 @@ mod sealed_trait {
                   all supported platforms",
         issue = "44930"
     )]
-    pub trait VaArgSafe {}
+    pub unsafe trait VaArgSafe {}
 }
 
 macro_rules! impl_va_arg_safe {
@@ -502,7 +494,7 @@ macro_rules! impl_va_arg_safe {
                        reason = "the `c_variadic` feature has not been properly tested on \
                                  all supported platforms",
                        issue = "44930")]
-            impl sealed_trait::VaArgSafe for $t {}
+            unsafe impl sealed_trait::VaArgSafe for $t {}
         )+
     }
 }
@@ -517,14 +509,15 @@ impl_va_arg_safe! {f64}
               all supported platforms",
     issue = "44930"
 )]
-impl<T> sealed_trait::VaArgSafe for *mut T {}
+unsafe impl<T> sealed_trait::VaArgSafe for *mut T {}
+
 #[unstable(
     feature = "c_variadic",
     reason = "the `c_variadic` feature has not been properly tested on \
               all supported platforms",
     issue = "44930"
 )]
-impl<T> sealed_trait::VaArgSafe for *const T {}
+unsafe impl<T> sealed_trait::VaArgSafe for *const T {}
 
 #[unstable(
     feature = "c_variadic",
